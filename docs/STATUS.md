@@ -278,6 +278,30 @@ Every correction is recorded in `LastLoadIssues` and written to
 - A Settings window (`allowRemoteImages`, default colour/opacity/size, theme,
   hotkeys, notes root)
 
+### Next, decided 2026-09-04: single-instance FIRST, then the checklist
+
+Do the single-instance service on its own, pulled forward out of Plan C, before
+anything else — including before running the smoke checklist.
+
+The reason is not that it is the biggest feature; it is that **the checklist
+cannot be trusted without it.** Every geometry, colour, opacity and
+three-states item verifies itself by reading `notes.json`, and today a second
+instance can overwrite that file between two of them. It has already happened
+once: four instances were running during the first manual session, and
+`2026-09-04-untitled.md` lost its index entry entirely, which in Plan B makes a
+note unreachable because there is no Open command. Running 85 manual items
+against a file with two writers means a real failure and a race look identical,
+so the list would have to be run twice.
+
+Scope: a named mutex so a second launch hands off rather than starting, and a
+pipe so it forwards "open this note" to the live instance. `App.OnStartup` is
+where it lands, before the `WebViewEnvironment.DetectRuntimeVersion()` check.
+`WindowManager.OpenNote` is already idempotent per path and already focuses an
+existing window, so the receiving side is a one-line call.
+
+Then run `docs/checklists/2026-09-02-plan-b-smoke.md` — 85 items, none run yet
+— and only then the rest of Plan C.
+
 ---
 
 ## Contracts Plan C must honour
