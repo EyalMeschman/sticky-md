@@ -112,6 +112,14 @@ public sealed class WebViewHost : IDisposable
         // colour. Setting it afterwards shows a white flash first.
         _control.DefaultBackgroundColor = backdrop;
 
+        // ConfigureAwait(TRUE) on both, and it must stay true. Everything
+        // after these awaits touches the WPF control and CoreWebView2, both of
+        // which belong to the UI thread; resuming on a ThreadPool thread
+        // throws InvalidOperationException from inside the WebView2 wrapper.
+        // On the RecreateAsync path it matters twice over -- see the note
+        // there about the reparent-before-Dispose ordering. A future
+        // ConfigureAwait(false) here produces a silent hang or a dispose race
+        // with no local clue that this line was the cause.
         var environment = await WebViewEnvironment.GetAsync().ConfigureAwait(true);
         await _control.EnsureCoreWebView2Async(environment).ConfigureAwait(true);
 
@@ -179,7 +187,15 @@ public sealed class WebViewHost : IDisposable
         if (core is null) return;
 
         if (_mappedDirectory.Length > 0)
+        {
             core.ClearVirtualHostNameToFolderMapping("note.local");
+
+            // Cleared HERE, not left to MapNoteDirectory. That method returns
+            // early when the new directory does not exist, so _mappedDirectory
+            // would keep naming the old, now-unmapped folder -- and Dispose
+            // would then try to clear a mapping that is already gone.
+            _mappedDirectory = string.Empty;
+        }
 
         MapNoteDirectory(core, noteDirectory);
     }
@@ -197,16 +213,25 @@ public sealed class WebViewHost : IDisposable
     }
 
     /// <summary>
-    /// Pushes rendered content into the page. Queued until the page reports
-    /// <c>ready</c>, so a render racing the shell load is not lost.
+    /// Pushes rendered content into the page, and REMEMBERS it.
     /// </summary>
+    /// <remarks>
+    /// The last render is this host's state, not a one-shot queue. It used to
+    /// be stored only when the shell was not yet loaded and cleared the moment
+    /// it was delivered, and that left the ProcessFailed recovery with nothing
+    /// to repaint: RecreateAsync builds a new control, InitializeAsync
+    /// navigates a fresh shell, the new page posts "ready", and the handler
+    /// found nothing pending and posted nothing. The note stayed blank
+    /// FOREVER -- no exception, no bar, and no timer running, because
+    /// NoteWindow's viewer-stall guard was stopped by the first successful
+    /// render hours earlier. Keeping the last render here makes every
+    /// re-navigation self-healing instead.
+    /// </remarks>
     public Task RenderAsync(RenderResult result)
     {
-        if (!_shellLoaded || _control.CoreWebView2 is null)
-        {
-            _pendingRender = result;
-            return Task.CompletedTask;
-        }
+        _pendingRender = result;
+
+        if (!_shellLoaded || _control.CoreWebView2 is null) return Task.CompletedTask;
 
         _control.CoreWebView2.PostWebMessageAsJson(WebMessages.Render(result));
         Rendered?.Invoke();
@@ -264,15 +289,13 @@ public sealed class WebViewHost : IDisposable
                 // endless recreate loop is exactly the flickering-note
                 // failure the fallback exists to prevent.
 
-                // Flush a render that arrived while the shell was still
-                // loading -- otherwise the first paint of a note opened at
-                // startup is empty until something else triggers a re-render.
-                if (_pendingRender is not null)
-                {
-                    var pending = _pendingRender;
-                    _pendingRender = null;
-                    _ = RenderAsync(pending);
-                }
+                // Post the LAST render, and do NOT clear it. Two cases, one
+                // line: the first paint of a note opened at startup, whose
+                // render raced the shell load; and every shell built AFTER
+                // that -- a theme change, the remote-image opt-in, and above
+                // all the ProcessFailed recovery, where this is the only
+                // thing that will ever repaint the note. See RenderAsync.
+                if (_pendingRender is not null) _ = RenderAsync(_pendingRender);
 
                 break;
 
@@ -349,11 +372,22 @@ public sealed class WebViewHost : IDisposable
         if (_disposed || _theme is null) return;
 
         var previous = _control;
+        var restored = false;
 
         try
         {
             _control = new WebView2CompositionControl();
 
+            // ConfigureAwait(TRUE), and it must stay true for two separate
+            // reasons. First, everything below this line touches the WPF
+            // visual tree via ControlRecreated. Second, the ORDERING: the
+            // subscriber re-parents the new control on this same thread before
+            // the finally block disposes `previous`. With
+            // ConfigureAwait(false) the continuation runs on a ThreadPool
+            // thread, ControlRecreated marshals back onto the dispatcher
+            // asynchronously, and `previous` can be disposed while it is still
+            // the control parented in the tree -- a dispose race that shows up
+            // as a blank or torn note, not as an exception here.
             await InitializeAsync(
                 _noteDirectory, _theme, _allowRemoteImages, _backdrop)
                 .ConfigureAwait(true);
@@ -380,6 +414,21 @@ public sealed class WebViewHost : IDisposable
         }
         catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
         {
+            // The half-initialised control goes, and the previous one comes
+            // back as _control. Leaving the failed one assigned meant this
+            // host was holding a control that never finished InitializeAsync:
+            // Dispose() would read CoreWebView2 off it (null, so no handlers
+            // detached and no virtual-host mapping cleared) and the previous
+            // control's renderer process would leak instead. The restored
+            // control is dead too -- ProcessFailed is why we are here -- but
+            // it is a control this host has consistent bookkeeping for, and
+            // the note is about to stop showing it anyway.
+            var failed = _control;
+            _control = previous;
+            restored = true;
+
+            try { failed.Dispose(); } catch (InvalidOperationException) { }
+
             // Also guarded: a host that was disposed while this await was in
             // flight must not tell an already-torn-down window to fall back
             // to plain text either.
@@ -391,7 +440,13 @@ public sealed class WebViewHost : IDisposable
         }
         finally
         {
-            try { previous.Dispose(); } catch (InvalidOperationException) { }
+            // Not when it was restored above: disposing it there would leave
+            // _control pointing at a disposed control, which is the same
+            // bookkeeping hole from the other side.
+            if (!restored)
+            {
+                try { previous.Dispose(); } catch (InvalidOperationException) { }
+            }
         }
     }
 

@@ -23,6 +23,14 @@ public class RecycleBinServiceTests
     [Fact]
     public void A_real_file_is_removed_from_disk()
     {
+        // THIS LEAVES A FILE IN THE DEVELOPER'S RECYCLE BIN on every run, and
+        // that is correct rather than a leak to fix: the one property worth
+        // testing here is that the file is RECOVERABLE afterwards, and no fake
+        // of SHFileOperationW can establish it. The accumulation is a handful
+        // of empty note.md files per test run under a
+        // %TEMP%\stickymd-recycle\<guid> folder -- expected, and safe to empty
+        // whenever it becomes annoying. Do not "fix" this by faking the shell
+        // call.
         var path = TempNote();
 
         var result = new RecycleBinService().SendToRecycleBin(path);

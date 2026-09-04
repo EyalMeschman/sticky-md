@@ -32,6 +32,14 @@ public interface INoteWindow : IDisposable
     void ShowNote(bool activate);
     void HideNote();
     void FocusNote();
+
+    /// <summary>
+    /// Spec §362: a newly created empty note opens directly in edit mode with
+    /// focus. Only <c>WindowManager.CreateAndOpenNote</c> calls this --
+    /// opening an EXISTING note must stay in preview.
+    /// </summary>
+    void EnterEditMode();
+
     void ApplyState(NoteState state, NoteTheme theme);
 
     /// <summary>An external edit arrived and the buffer was clean.</summary>
@@ -89,11 +97,41 @@ public sealed partial class NoteWindow : Window, INoteWindow
     private WebViewHost _web;
     private NoteState _state;
     private NoteTheme _theme;
+    private StickyMD.Core.Theming.ThemeMode _resolvedMode = StickyMD.Core.Theming.ThemeMode.Light;
     private string _buffer = string.Empty;
-    private string _diskHash = string.Empty;
     private bool _webReady;
     private bool _disposed;
     private bool _editing;
+
+    /// <summary>
+    /// The file exists but could not be READ -- an exclusive lock from another
+    /// editor, an AV scan, OneDrive, a share hiccup.
+    /// </summary>
+    /// <remarks>
+    /// THIS FLAG IS WHAT STOPS THE FILE BEING TRUNCATED. The note's real
+    /// content is still on disk while <c>_buffer</c> is empty, so an
+    /// apparently blank note that accepts one keystroke would 500ms later
+    /// autosave that one character over the whole file -- and
+    /// <c>_saves.AdoptFromDisk</c> never ran, so a CRLF or BOM note would lose
+    /// its format with it. The bar and <c>Editor.IsReadOnly</c> explain the
+    /// state; only this gate makes writing impossible until a read succeeds.
+    /// </remarks>
+    private bool _loadFailed;
+
+    /// <summary>
+    /// What the WebView shell was last BUILT with -- not what this window
+    /// currently wants.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ApplyState"/> compares against these before re-navigating.
+    /// Windows raises <c>UserPreferenceChanged</c> for accent colour, wallpaper
+    /// and a broad slice of <c>WM_SETTINGCHANGE</c> traffic, not only for
+    /// light/dark, and every one of those used to reach here and rebuild the
+    /// page: every note on the desktop flashes and re-renders on an accent
+    /// colour change. Null until the first shell is built.
+    /// </remarks>
+    private NoteTheme? _shellTheme;
+    private bool _shellAllowRemoteImages;
 
     // Default false preserves this task's behaviour exactly. Task 12 flips
     // this for the per-note "Load remote images" bar; declaring and reading
@@ -156,7 +194,10 @@ public sealed partial class NoteWindow : Window, INoteWindow
             OnSaved(outcome);
         };
 
-        _autosave.Tick += async (_, _) => { _autosave.Stop(); await _saves.FlushAsync().ConfigureAwait(true); };
+        // Through FlushAsync, never _saves.FlushAsync directly: FlushAsync is
+        // where the "the file was never read" gate lives, and a debounce tick
+        // that went straight to the coordinator would walk straight past it.
+        _autosave.Tick += async (_, _) => await FlushAsync().ConfigureAwait(true);
         _viewerStall.Tick += (_, _) => { _viewerStall.Stop(); ShowViewerStalled(); };
         Editor.TextChanged += OnEditorTextChanged;
         Editor.LostFocus += async (_, _) => await FlushAsync().ConfigureAwait(true);
@@ -178,22 +219,20 @@ public sealed partial class NoteWindow : Window, INoteWindow
         : WindowGeometry.GetBounds(_handle);
 
     public event Action<string>? CloseRequested;
-
-    // CS0067 suppressed for the three below: they are part of INoteWindow but
-    // are only raised starting in Tasks 10-12 (rename, delete, and link
-    // navigation are not wired in this task). Left inert on purpose -- see
-    // WireHeader.
-#pragma warning disable CS0067
     public event Action<string>? DeleteRequested;
     public event Action<string, string>? RenameRequested;
     public event Action<string>? OpenNoteRequested;
-#pragma warning restore CS0067
 
     // `new`: System.Windows.Window already declares a parameterless
     // StateChanged event (window minimize/maximize/restore). This one is
     // INoteWindow's, with a different signature, and deliberately shadows it
     // -- nothing in this class means to observe the base Window's version.
     public new event Action<string, NoteState>? StateChanged;
+
+    // TEMPORARY (Plan B only). Removed in Plan C, which gives the tray menu
+    // New Note. Not on INoteWindow -- WindowManagerTests drives the manager
+    // through fakes and has no reason to know about this key.
+    public event Action? NewNoteRequested;
 
     private IntPtr _handle = IntPtr.Zero;
 
@@ -235,12 +274,11 @@ public sealed partial class NoteWindow : Window, INoteWindow
         {
             _state = _state with { AlwaysOnTop = !_state.AlwaysOnTop };
             Topmost = _state.AlwaysOnTop;
-            StateChanged?.Invoke(NotePath, _state);
+            StateChanged?.Invoke(NotePath, CurrentState());
         };
 
-        // Colour, Opacity, Rename, Delete and the edit toggle are wired in
-        // Tasks 10 and 12. Left inert here so this task's deliverable is a
-        // window that opens, drags, resizes, and renders.
+        MoreButton.Click += (_, _) => ShowMoreMenu(MoreButton);
+        ColorButton.Click += (_, _) => ShowMoreMenu(ColorButton);
     }
 
     private void FadeHeaderButtons(double to)
@@ -248,9 +286,182 @@ public sealed partial class NoteWindow : Window, INoteWindow
             OpacityProperty,
             new DoubleAnimation(to, TimeSpan.FromMilliseconds(120)));
 
+    /// <summary>
+    /// The spec's menu, verbatim: Rename…, Color ▸, Opacity ▸, Always on Top ☑,
+    /// separator, Delete. Every entry maps to a v1 feature.
+    /// </summary>
+    private void ShowMoreMenu(System.Windows.Controls.Button anchor)
+    {
+        var menu = new System.Windows.Controls.ContextMenu();
+
+        var rename = new System.Windows.Controls.MenuItem { Header = "Rename…" };
+        rename.Click += (_, _) => PromptRename();
+        menu.Items.Add(rename);
+
+        var colours = new System.Windows.Controls.MenuItem { Header = "Color" };
+
+        foreach (var colour in NotePalette.All)
+        {
+            var item = new System.Windows.Controls.MenuItem
+            {
+                Header = colour.ToString(),
+                IsCheckable = true,
+                IsChecked = colour == _state.Color,
+            };
+
+            var chosen = colour;
+            item.Click += (_, _) => ApplyColour(chosen);
+            colours.Items.Add(item);
+        }
+
+        menu.Items.Add(colours);
+
+        var opacities = new System.Windows.Controls.MenuItem { Header = "Opacity" };
+
+        // Floored ABOVE StateValidator.MinOpacity (0.30 here vs. 0.20 there)
+        // for the same reason that floor exists: below roughly 20% a note is
+        // invisible and cannot be found with the mouse to be fixed. Offering
+        // 10% here would let the user create a state they cannot get out of.
+        foreach (var value in new[] { 1.0, 0.9, 0.75, 0.5, 0.3 })
+        {
+            var item = new System.Windows.Controls.MenuItem
+            {
+                Header = $"{value * 100:0}%",
+                IsCheckable = true,
+                IsChecked = Math.Abs(_state.Opacity - value) < 0.001,
+            };
+
+            var chosen = value;
+            item.Click += (_, _) => ApplyOpacity(chosen);
+            opacities.Items.Add(item);
+        }
+
+        menu.Items.Add(opacities);
+
+        var pin = new System.Windows.Controls.MenuItem
+        {
+            Header = "Always on Top",
+            IsCheckable = true,
+            IsChecked = _state.AlwaysOnTop,
+        };
+        pin.Click += (_, _) =>
+        {
+            _state = _state with { AlwaysOnTop = !_state.AlwaysOnTop };
+            Topmost = _state.AlwaysOnTop;
+            StateChanged?.Invoke(NotePath, CurrentState());
+        };
+        menu.Items.Add(pin);
+
+        menu.Items.Add(new System.Windows.Controls.Separator());
+
+        var delete = new System.Windows.Controls.MenuItem { Header = "Delete" };
+        delete.Click += (_, _) => ConfirmDelete();
+        menu.Items.Add(delete);
+
+        menu.PlacementTarget = anchor;
+        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        menu.IsOpen = true;
+    }
+
+    private void ApplyColour(NoteColor colour)
+    {
+        _state = _state with { Color = colour };
+
+        var theme = NotePalette.Get(colour, _resolvedMode);
+        ApplyTheme(theme);
+
+        // The WebView needs a fresh shell for the new CSS variables and a new
+        // opaque backdrop, or the note's chrome and its content disagree about
+        // what this colour is. Guarded like ApplyState's identical call: the
+        // shell may not have finished its first InitializeAsync yet.
+        if (_webReady) _ = ReloadShellAsync();
+
+        StateChanged?.Invoke(NotePath, CurrentState());
+    }
+
+    private void ApplyOpacity(double value)
+    {
+        _state = _state with { Opacity = value };
+
+        // Window.Opacity, never SetLayeredWindowAttributes. WS_EX_LAYERED
+        // cannot be added post-creation on this platform, and WPF has already
+        // applied it at CreateWindowEx because AllowsTransparency is True.
+        Opacity = value;
+
+        StateChanged?.Invoke(NotePath, CurrentState());
+    }
+
+    /// <summary>
+    /// <c>_state</c> with the window's LIVE rect stamped onto it.
+    /// </summary>
+    /// <remarks>
+    /// EVERY StateChanged raise must go through this. WindowManager.Persist
+    /// replaces the whole index entry, not just the field that changed, and
+    /// _state's X/Y/W/H are only as fresh as the last event that happened to
+    /// write them -- so a colour, opacity or pin change built straight from
+    /// _state persists the geometry the note had when it opened and silently
+    /// reverts every move the user has made since. Reading Bounds at the
+    /// moment of the event is enough; no LocationChanged/SizeChanged
+    /// subscription is needed, and that matches how the rest of the manager
+    /// reads geometry.
+    /// </remarks>
+    private NoteState CurrentState()
+    {
+        if (_handle == IntPtr.Zero) return _state;
+
+        var bounds = WindowGeometry.GetBounds(_handle);
+
+        // A zero rect means GetWindowRect failed or the window is not realised
+        // yet. Keeping the last known geometry beats persisting an empty one.
+        if (bounds.Width <= 0 || bounds.Height <= 0) return _state;
+
+        _state = _state with
+        {
+            X = bounds.X, Y = bounds.Y, W = bounds.Width, H = bounds.Height,
+        };
+
+        return _state;
+    }
+
+    private void PromptRename()
+    {
+        var dialog = new RenamePrompt(Path.GetFileNameWithoutExtension(NotePath))
+        {
+            Owner = this,
+        };
+
+        if (dialog.ShowDialog() != true) return;
+
+        // The manager performs the rename: it owns the index key and the
+        // open-notes map, and re-keying either from here would leave the other
+        // stale.
+        RenameRequested?.Invoke(NotePath, dialog.NewName);
+    }
+
+    private void ConfirmDelete()
+    {
+        // Owner is THIS window, not the parameterless overload. An owner-less
+        // MessageBox gets hWnd = IntPtr.Zero and no owner relationship, so a
+        // Topmost note (Always on Top is a first-class feature here) can
+        // render on top of it -- a frozen, unclickable note with no dialog
+        // visible anywhere.
+        var answer = MessageBox.Show(
+            this,
+            $"Send \"{Path.GetFileName(NotePath)}\" to the Recycle Bin?",
+            "Delete note",
+            MessageBoxButton.OKCancel,
+            MessageBoxImage.Warning,
+            MessageBoxResult.Cancel);
+
+        if (answer != MessageBoxResult.OK) return;
+
+        DeleteRequested?.Invoke(NotePath);
+    }
+
     private void ApplyTheme(NoteTheme theme)
     {
         _theme = theme;
+        _resolvedMode = theme.Mode;
 
         Root.Background = new SolidColorBrush(Parse(theme.ContentBg));
         Root.BorderBrush = new SolidColorBrush(Parse(theme.Border));
@@ -300,14 +511,49 @@ public sealed partial class NoteWindow : Window, INoteWindow
 
         var directory = Path.GetDirectoryName(NotePath) ?? string.Empty;
 
-        await _web.InitializeAsync(
-            directory,
-            _theme,
-            allowRemoteImages: _allowRemoteImages,
-            backdrop: System.Drawing.ColorTranslator.FromHtml(_theme.ContentBg))
-            .ConfigureAwait(true);
+        try
+        {
+            await _web.InitializeAsync(
+                directory,
+                _theme,
+                allowRemoteImages: _allowRemoteImages,
+                backdrop: System.Drawing.ColorTranslator.FromHtml(_theme.ContentBg))
+                .ConfigureAwait(true);
 
-        _webReady = true;
+            RecordShellInputs();
+            _webReady = true;
+        }
+        catch (Exception ex)
+        {
+            // App.OnStartup handles the runtime being ABSENT. This is the
+            // adjacent and more common case: the runtime is there but
+            // WebViewEnvironment.GetAsync or EnsureCoreWebView2Async fails --
+            // a locked or corrupt user-data folder, a policy block, an SDK
+            // mismatch. OnSourceInitialized is async void, so before this
+            // catch existed that took the whole process down at the FIRST
+            // note, with no diagnostics line and no recovery snapshot for any
+            // other note's dirty buffer.
+            //
+            // DELIBERATELY UNFILTERED. The failure set here spans COM
+            // HRESULTs, IO, argument validation and SDK-internal types; a
+            // filter list would be a list of the ones we happened to think
+            // of, and the cost of missing one is process death. The recreate
+            // path already has FellBackToPlainText; this gives the initial
+            // path the same route.
+            Core.Diagnostics.DiagnosticsLog.Write(
+                AppPaths.DiagnosticsFile,
+                $"{NotePath}: the note viewer could not start -- {ex}");
+
+            // BEFORE the fallback: OnFellBackToPlainText copies _buffer into
+            // the editor, and an empty buffer would show the user a blank pane
+            // for a note whose text is sitting on disk.
+            LoadFromDisk();
+
+            OnFellBackToPlainText(
+                "The note viewer could not start. Showing the note as plain text.");
+
+            return;
+        }
 
         LoadFromDisk();
         await RenderAsync().ConfigureAwait(true);
@@ -352,6 +598,18 @@ public sealed partial class NoteWindow : Window, INoteWindow
     /// only set once in the constructor, so without this the note would keep
     /// showing the dead control after a crash and never visibly recover.
     /// </summary>
+    /// <remarks>
+    /// This runs SYNCHRONOUSLY inside WebViewHost.RecreateAsync, on the
+    /// continuation after its <c>ConfigureAwait(true)</c>, and the re-parent
+    /// below must complete before that method's <c>finally</c> disposes the
+    /// previous control. Turning either of the host's recreate-path awaits
+    /// into <c>ConfigureAwait(false)</c> breaks that ordering -- the
+    /// dispatcher marshal here becomes asynchronous and the old control can be
+    /// disposed while it is still the one in the visual tree. It shows up as a
+    /// blank or torn note, never as an exception at this line. The content
+    /// itself is repainted by the new shell's "ready", which posts the host's
+    /// remembered render.
+    /// </remarks>
     private void OnControlRecreated(WebView2CompositionControl control)
     {
         // Dispatcher-guarded on purpose. WebView2 raises its events on the thread
@@ -366,17 +624,34 @@ public sealed partial class NoteWindow : Window, INoteWindow
         }
 
         WebViewSlot.Content = control;
+
+        // Re-arm the stall guard for THIS navigation. The recreated shell is
+        // the only thing that will ever repaint the note -- its "ready" posts
+        // the host's remembered render -- so if it never reaches "ready",
+        // _pendingRender is never posted and Rendered never fires. The timer
+        // was stopped by the first successful render, possibly hours ago, so
+        // without this the note is blank with no bar and no timeout: C2's
+        // exact symptom, one failure deeper. Restart rather than Start, for
+        // the same reason ReloadShellAsync does.
+        _viewerStall.Stop();
+        _viewerStall.Start();
     }
 
     private void LoadFromDisk()
     {
+        // Cleared up front so a successful Retry re-enables saving. Only the
+        // "exists but unreadable" catch below sets it again.
+        _loadFailed = false;
+
         try
         {
             var content = NoteFile.Read(NotePath);
             _saves.AdoptFromDisk(content);
             _buffer = content.Text;
-            _diskHash = content.ContentHash;
         }
+        // FileNotFound and DirectoryNotFound keep the buffer empty and keep
+        // SAVING ENABLED on purpose: there is no content to lose, and writing
+        // genuinely recreates the note. That is not true of the IO catch below.
         catch (FileNotFoundException) { _buffer = string.Empty; }
         catch (DirectoryNotFoundException) { _buffer = string.Empty; }
         catch (System.Text.DecoderFallbackException)
@@ -393,13 +668,59 @@ public sealed partial class NoteWindow : Window, INoteWindow
         {
             // Keep the buffer empty rather than half-read -- a partial buffer
             // that later autosaves would overwrite the file with less than it
-            // had.
+            // had. ZERO characters is that same failure taken to its limit,
+            // which is why the gate below is not optional: the file's real
+            // content is on disk and only momentarily unreachable.
             _buffer = string.Empty;
+            _loadFailed = true;
+
             Core.Diagnostics.DiagnosticsLog.Write(
                 AppPaths.DiagnosticsFile, $"{NotePath}: could not be read -- {ex.Message}");
+
+            TitleText.Text = NoteTitleResolver.Resolve(_buffer, NotePath);
+            ShowLoadFailed(ex.Message);
+            return;
         }
 
         TitleText.Text = NoteTitleResolver.Resolve(_buffer, NotePath);
+    }
+
+    /// <summary>
+    /// The file exists but could not be read right now.
+    /// </summary>
+    /// <remarks>
+    /// Read-only plus <see cref="_loadFailed"/>, not just a bar: an empty note
+    /// that accepts typing autosaves one character over the whole file 500ms
+    /// later. Retry re-runs the load and, on success, hands the note back --
+    /// editable, rendered, and saving again.
+    /// </remarks>
+    private void ShowLoadFailed(string reason)
+    {
+        Editor.IsReadOnly = true;
+
+        _bars.Show(new InlineBarRequest(
+            "load-failed",
+            $"This note couldn't be read — {reason}",
+            PrimaryAction: "Retry",
+            OnPrimary: () =>
+            {
+                LoadFromDisk();
+
+                // Still unreadable: LoadFromDisk has already re-raised this
+                // bar with the current reason, so there is nothing to undo.
+                if (_loadFailed) return;
+
+                Editor.IsReadOnly = false;
+                _bars.Dismiss("load-failed");
+
+                if (_editing) SetEditorText(_buffer);
+
+                _ = RenderAsync();
+            },
+            Dismissible: false,
+            // A failed Retry must leave the bar up: the file is still
+            // unreadable and the editor is still read-only for a reason.
+            PrimaryKeepsBar: true));
     }
 
     private async Task RenderAsync()
@@ -417,6 +738,11 @@ public sealed partial class NoteWindow : Window, INoteWindow
 
             return;
         }
+
+        // Trimming a 3MB note back under the limit must take the bar with it.
+        // Left up, it claims the preview is off while the preview is visibly
+        // working -- and it is not dismissible, so the user cannot clear it.
+        _bars.Dismiss("size-limit");
 
         var result = _renderer.Render(
             _buffer, new StickyMD.Core.Markdown.RenderOptions(_allowRemoteImages));
@@ -640,6 +966,8 @@ public sealed partial class NoteWindow : Window, INoteWindow
             System.Drawing.ColorTranslator.FromHtml(_theme.ContentBg))
             .ConfigureAwait(true);
 
+        RecordShellInputs();
+
         // Restart, not just Start: a re-navigation while a previous guard is
         // already ticking (a second theme change in quick succession) must
         // get the full 10s from THIS navigation, not whatever was left of
@@ -648,6 +976,16 @@ public sealed partial class NoteWindow : Window, INoteWindow
         _viewerStall.Start();
 
         await RenderAsync().ConfigureAwait(true);
+    }
+
+    /// <summary>
+    /// Records what the shell was just built with, immediately after each of
+    /// the two calls that build one.
+    /// </summary>
+    private void RecordShellInputs()
+    {
+        _shellTheme = _theme;
+        _shellAllowRemoteImages = _allowRemoteImages;
     }
 
     /// <summary>INoteWindow's seam onto <see cref="ShowRecoveredContent"/>.</summary>
@@ -706,9 +1044,38 @@ public sealed partial class NoteWindow : Window, INoteWindow
             PrimaryKeepsBar: true));
     }
 
+    /// <summary>
+    /// Replaces the editor's text with something that came from DISK, not from
+    /// the user.
+    /// </summary>
+    /// <remarks>
+    /// The handler is detached across the assignment. Leaving it attached ran
+    /// MarkDirty over content that already matched the file -- a redundant
+    /// write, and worse: IsDirty flipped true, so the NEXT external edit
+    /// escalated from a silent reload to an "Ask" bar for a buffer that had
+    /// never been touched. The caret is clamped rather than left at 0, since
+    /// assigning Text resets it and an external edit is usually an append.
+    /// </remarks>
+    private void SetEditorText(string text)
+    {
+        var caret = Editor.CaretIndex;
+
+        Editor.TextChanged -= OnEditorTextChanged;
+        Editor.Text = text;
+        Editor.TextChanged += OnEditorTextChanged;
+
+        Editor.CaretIndex = Math.Min(caret, Editor.Text.Length);
+    }
+
     private void OnEditorTextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
     {
         if (!_editing) return;
+
+        // The file has never been read successfully, so _buffer is empty while
+        // the note's real text sits on disk. Writing this would truncate it.
+        // Editor.IsReadOnly already blocks typing; this closes the path for
+        // any programmatic assignment that forgets to.
+        if (_loadFailed) return;
 
         _buffer = Editor.Text;
         _saves.MarkDirty(_buffer);
@@ -734,6 +1101,29 @@ public sealed partial class NoteWindow : Window, INoteWindow
         {
             _ = ExitEditModeAsync();
             e.Handled = true;
+        }
+
+        // TEMPORARY (Plan B only). Removed in Plan C, which gives the tray
+        // menu New Note and Exit. Without an exit path the shutdown behaviour
+        // -- the one that must NOT clear isOpen -- cannot be tested by hand at
+        // all, and Task Manager kills the process before OnExit runs.
+        if ((Keyboard.Modifiers
+                & (ModifierKeys.Control | ModifierKeys.Shift | ModifierKeys.Alt))
+            == (ModifierKeys.Control | ModifierKeys.Shift | ModifierKeys.Alt))
+        {
+            if (e.Key == Key.Q)
+            {
+                Application.Current.Shutdown();
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key == Key.N)
+            {
+                NewNoteRequested?.Invoke();
+                e.Handled = true;
+                return;
+            }
         }
     }
 
@@ -823,6 +1213,26 @@ public sealed partial class NoteWindow : Window, INoteWindow
     private async Task FlushAsync()
     {
         _autosave.Stop();
+
+        if (_loadFailed)
+        {
+            // THE GATE. Every write path in this window funnels through here,
+            // so refusing once is what makes "a note whose file could not be
+            // read cannot overwrite that file" true rather than hopeful.
+            // Reported rather than swallowed -- a save that quietly does
+            // nothing is exactly the silent failure the governing rule
+            // forbids.
+            if (_saves.IsDirty)
+            {
+                Core.Diagnostics.DiagnosticsLog.Write(
+                    AppPaths.DiagnosticsFile,
+                    $"{NotePath}: a save was refused -- the file has never been read "
+                        + "successfully, so writing would replace it with less than it has.");
+            }
+
+            return;
+        }
+
         await _saves.FlushAsync().ConfigureAwait(true);
     }
 
@@ -858,6 +1268,11 @@ public sealed partial class NoteWindow : Window, INoteWindow
         Topmost = state.AlwaysOnTop;
         Opacity = state.Opacity;
 
+        // Compared BEFORE ApplyTheme overwrites _theme. NoteTheme is a record,
+        // so this compares all eight colours plus the resolved mode.
+        var shellIsStale = !theme.Equals(_shellTheme)
+            || _allowRemoteImages != _shellAllowRemoteImages;
+
         ApplyTheme(theme);
 
         if (_handle != IntPtr.Zero)
@@ -866,13 +1281,21 @@ public sealed partial class NoteWindow : Window, INoteWindow
                 _handle, new PixelRect(state.X, state.Y, state.W, state.H));
         }
 
+        // Only when the shell's own inputs actually moved. ApplyState also
+        // arrives for a geometry re-clamp and for OS preference changes that
+        // are not theme changes at all -- Windows raises those for accent
+        // colour and wallpaper too -- and ReloadShellAsync re-navigates via
+        // NavigateToString, which flashes the note and re-renders it. Guarded
+        // here as well as in WindowManager on purpose: this makes ApplyState
+        // safe for every future caller, not just today's two.
+        //
         // Through ReloadShellAsync, not _web.SetThemeAsync directly: that
         // re-navigates the shell but posts no render afterwards, so an
         // ordinary theme or colour change arriving here would leave the note
         // blank until something else happened to trigger a render. Routing
         // through ReloadShellAsync also re-arms the viewer-stall guard, in
         // case THIS re-navigation is the one that never reaches "ready".
-        if (_webReady) _ = ReloadShellAsync();
+        if (_webReady && shellIsStale) _ = ReloadShellAsync();
     }
 
     public void ApplyExternalContent(NoteContent content)
@@ -912,14 +1335,18 @@ public sealed partial class NoteWindow : Window, INoteWindow
         _bars.Dismiss("changed-disk");
 
         _buffer = content.Text;
-        _diskHash = content.ContentHash;
 
-        // The RAW hash, not the token: this is what SaveCoordinator puts in
-        // the recovery envelope's LastKnownDiskHash, which Task 13 compares
-        // against a freshly-read NoteFile.Read(...).ContentHash.
+        // The whole NoteContent, so the coordinator keeps the RAW hash rather
+        // than the token: that is what goes into the recovery envelope's
+        // LastKnownDiskHash, which WindowManager.OfferRecovery compares against
+        // a freshly-read NoteFile.Read(...).ContentHash. SaveCoordinator.DiskHash
+        // is the one copy of it -- this window deliberately keeps no second.
         _saves.AdoptFromDisk(content);
 
-        if (_editing) Editor.Text = content.Text;
+        // Through SetEditorText: a bare Editor.Text assignment re-enters
+        // OnEditorTextChanged and marks a buffer dirty that already matches
+        // disk. See SetEditorText's remarks.
+        if (_editing) SetEditorText(content.Text);
 
         TitleText.Text = NoteTitleResolver.Resolve(_buffer, NotePath);
         _ = RenderAsync();
@@ -953,6 +1380,11 @@ public sealed partial class NoteWindow : Window, INoteWindow
 
     public void SaveNow()
     {
+        // The same gate FlushAsync applies -- see _loadFailed. Nothing should
+        // be able to mark this note dirty while the flag is set, but the
+        // shutdown flush must not be the one write path that assumes so.
+        if (_loadFailed) return;
+
         // Synchronous on purpose: called during shutdown and window disposal,
         // where an awaited continuation may never be pumped because the
         // dispatcher is already shutting down. This cannot deadlock precisely
@@ -974,19 +1406,12 @@ public sealed partial class NoteWindow : Window, INoteWindow
         // and a direct breach of success criterion 3.
         //
         // The close glyph goes through CloseRequested -> WindowManager
-        // instead.
+        // instead -- and WindowManager.CloseNote harvests Bounds itself,
+        // because Detach has already removed this subscription by the time
+        // Dispose gets here. Do not make this the only geometry harvest.
         if (_handle == IntPtr.Zero) return;
 
-        var bounds = WindowGeometry.GetBounds(_handle);
-
-        if (bounds.Width <= 0 || bounds.Height <= 0) return;
-
-        _state = _state with
-        {
-            X = bounds.X, Y = bounds.Y, W = bounds.Width, H = bounds.Height,
-        };
-
-        StateChanged?.Invoke(NotePath, _state);
+        StateChanged?.Invoke(NotePath, CurrentState());
     }
 
     public void Dispose()

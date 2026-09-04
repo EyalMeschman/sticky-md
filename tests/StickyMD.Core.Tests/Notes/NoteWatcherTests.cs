@@ -182,6 +182,33 @@ public class NoteWatcherTests
     }
 
     [Fact]
+    public void A_rename_whose_paths_are_unusable_is_dropped_rather_than_reported()
+    {
+        // OnRenamed's "TryCanonical failed, so drop it" branch. Both sides end
+        // in .md, so this gets past the tmp-file and out-of-set routing and
+        // reaches the canonicalisation guard -- where an embedded NUL cannot
+        // become a path. The requirement is that ONE unusable event costs that
+        // event and nothing else: no throw out of the watcher callback (which
+        // is unhandled from a FileSystemWatcher thread), and no Renamed
+        // carrying a path no consumer could re-key to.
+        using var dir = new TempDir();
+        dir.WriteFile("a.md", "content");
+
+        var fired = new List<string>();
+
+        using var watcher = new NoteWatcher(dir.Path, new WriteLedger());
+        watcher.Renamed += (_, _) => fired.Add("Renamed");
+        watcher.ExternalChanged += _ => fired.Add("ExternalChanged");
+        watcher.Deleted += _ => fired.Add("Deleted");
+
+        Should.NotThrow(() => RaiseRenamed(
+            watcher, dir.File("a\0b.md"), dir.File("c.md")));
+
+        Wait.StaysFalse(() => fired.Count > 0,
+            "an unusable rename path must cost that one event and nothing more");
+    }
+
+    [Fact]
     public void Ignores_files_that_are_not_markdown()
     {
         using var dir = new TempDir();

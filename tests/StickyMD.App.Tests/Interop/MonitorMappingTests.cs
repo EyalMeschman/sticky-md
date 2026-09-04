@@ -70,6 +70,28 @@ public class MonitorMappingTests
     }
 
     [Fact]
+    public void The_non_primary_monitors_keep_their_enumeration_order()
+    {
+        // THE TEST THAT FAILS IF List.Sort COMES BACK, and this exact shape is
+        // what it takes: three monitors with the primary LAST. Array.Sort
+        // special-cases a three-element range as three SwapIfGreater calls,
+        // and that sequence is not stable -- it returned
+        // [DISPLAY1, DISPLAY3, DISPLAY2] here, reversing the two non-primaries.
+        // notes.json records the device name, so a run-to-run reshuffle makes
+        // a recorded monitor mean nothing. Verified by reverting Map to
+        // List.Sort: this test fails, and passes again with OrderByDescending.
+        var mapped = MonitorEnumerator.Map(
+        [
+            Raw(x: 2560, primary: false, device: @"\\.\DISPLAY2"),
+            Raw(x: 5120, primary: false, device: @"\\.\DISPLAY3"),
+            Raw(primary: true, device: @"\\.\DISPLAY1"),
+        ]);
+
+        mapped.Select(m => m.DeviceName).ShouldBe(
+            [@"\\.\DISPLAY1", @"\\.\DISPLAY2", @"\\.\DISPLAY3"]);
+    }
+
+    [Fact]
     public void A_zero_dpi_is_replaced_with_96()
     {
         // GetDpiForMonitor can fail; the caller records 0 rather than

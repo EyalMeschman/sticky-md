@@ -210,8 +210,51 @@ public class MarkdownRendererTests
         => Html("![t](//evil.com/pic.png)").ShouldContain(MarkdownRenderer.BlockedScheme);
 
     [Fact]
-    public void A_query_string_survives_the_virtual_host_rewrite()
-        => Html("![d](img.png?v=2)").ShouldContain("https://note.local/img.png?v=2");
+    public void A_query_string_is_encoded_into_the_filename_not_left_as_a_query()
+    {
+        // This USED to assert the query survived, as a cache-buster. Segment
+        // escaping deliberately ends that: '#' is legal in a Windows filename
+        // and truncated the URL at the fragment, so the whole segment is now
+        // percent-encoded. '?' cannot appear in a Windows filename at all, so
+        // nothing addressable is lost -- a link written this way was relying
+        // on note.local's host quietly discarding the query, and there is no
+        // server behind it for a query to mean anything to.
+        Html("![d](img.png?v=2)").ShouldContain("https://note.local/img.png%3Fv%3D2");
+    }
+
+    [Fact]
+    public void A_hash_in_a_filename_is_escaped_rather_than_truncating_the_url()
+    {
+        // Unescaped, "https://note.local/draft#2.png" asks for "draft" and
+        // treats the rest as a fragment: the image silently never loads, with
+        // no error anywhere. '#' is legal in a Windows filename.
+        var html = Html("![d](draft#2.png)");
+
+        html.ShouldContain("https://note.local/draft%232.png");
+        html.ShouldNotContain(MarkdownRenderer.BlockedScheme);
+    }
+
+    [Fact]
+    public void A_space_in_a_filename_is_escaped_and_subfolders_keep_their_separator()
+    {
+        // Pointy brackets are how CommonMark carries a space in a link
+        // destination; without them Markdig does not treat this as an image
+        // at all.
+        Html("![d](<my images/note 1.png>)")
+            .ShouldContain("https://note.local/my%20images/note%201.png");
+    }
+
+    [Fact]
+    public void An_already_encoded_space_is_not_double_encoded()
+    {
+        // "%20" is the standard CommonMark encoding for a space in a link
+        // destination. Escaping without decoding first yielded "%2520", the
+        // host decoded once, and the request went out for a file literally
+        // named "my%20file.png" -- a working link silently stopping working,
+        // which is the failure class the escaping exists to close.
+        Html("![d](my%20file.png)")
+            .ShouldContain("https://note.local/my%20file.png");
+    }
 
     // ---- token ----
 

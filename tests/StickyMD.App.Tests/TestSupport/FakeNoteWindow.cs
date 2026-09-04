@@ -26,6 +26,7 @@ public sealed class FakeNoteWindow(string notePath, NoteState state) : INoteWind
     public bool IsDisposed { get; private set; }
     public bool WasToldFileDeleted { get; private set; }
     public bool WasSaved { get; private set; }
+    public bool EnteredEditMode { get; private set; }
 
     public RecoveryEnvelope? RecoveryOffered { get; private set; }
 
@@ -38,6 +39,7 @@ public sealed class FakeNoteWindow(string notePath, NoteState state) : INoteWind
 
     public List<string> ExternalContentApplied { get; } = [];
     public List<NoteState> StatesApplied { get; } = [];
+    public List<NoteTheme> ThemesApplied { get; } = [];
     public List<string> RenamesApplied { get; } = [];
 
     public event Action<string>? CloseRequested;
@@ -60,10 +62,13 @@ public sealed class FakeNoteWindow(string notePath, NoteState state) : INoteWind
         WasFocused = true;
     }
 
+    public void EnterEditMode() => EnteredEditMode = true;
+
     public void ApplyState(NoteState state, NoteTheme theme)
     {
         State = state;
         StatesApplied.Add(state);
+        ThemesApplied.Add(theme);
     }
 
     public void ApplyExternalContent(NoteContent content)

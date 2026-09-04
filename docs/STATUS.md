@@ -3,7 +3,8 @@
 **Read this first.** It is the orientation document for anyone picking this
 project up, including a fresh assistant session with no prior context.
 
-Last updated: 2026-08-23, after Plan A completed.
+Last updated: 2026-09-04, after Plan B's whole-branch review and its single
+fix wave.
 
 ---
 
@@ -28,11 +29,11 @@ The governing rule the whole codebase is written against:
 
 Two projects, three phases of work.
 
-| Plan  | Scope                                                    | Status                        |
-| ----- | -------------------------------------------------------- | ----------------------------- |
-| **A** | `StickyMD.Core` — the platform-free core                 | **Complete**                  |
-| **B** | `StickyMD.App` — the WPF shell                           | Not started (not yet written) |
-| **C** | Shell services — tray, hotkeys, startup, single-instance | Not started (not yet written) |
+| Plan  | Scope                                                    | Status                            |
+| ----- | -------------------------------------------------------- | --------------------------------- |
+| **A** | `StickyMD.Core` — the platform-free core                 | **Complete**                      |
+| **B** | `StickyMD.App` — the WPF shell                           | **Complete — unverified by hand** |
+| **C** | Shell services — tray, hotkeys, startup, single-instance | Not started — next                |
 
 `StickyMD.Core` targets plain **`net10.0`**, deliberately _not_
 `net10.0-windows`. That makes the spec's "zero WPF/Win32 in Core" boundary a
@@ -42,24 +43,53 @@ is reachable from a headless test runner.
 
 ---
 
+## Plan B is complete — the checklist is the real gate
+
+Plan is `docs/plans/2026-09-02-stickymd-plan-b-wpf-shell.md`. **All 14 tasks
+are implemented and tested**, the whole-branch review has run, and its single
+fix wave is applied. What is left before Plan C is the checklist, by hand.
+
+- **497 tests pass, 0 failed, 0 build warnings** (390 Core + 107 App).
+- **Both of Plan A's open findings are resolved** — see Resolved findings
+  below.
+- **Nothing in Plan B has ever been run by a human.** Task 14 wrote the manual
+  smoke checklist, `docs/checklists/2026-09-02-plan-b-smoke.md`, and it has not
+  been executed. Five plan defects surfaced only when code actually ran during
+  Tasks 1-13 — including one where `NavigateToString` reports a
+  `data:text/html` URI rather than `about:blank`, so the navigation policy was
+  cancelling every note's shell load and **no note would have rendered at
+  all**. The whole-branch review then found three more merge blockers in the
+  same blind spot — a note whose file could not be read truncating that file on
+  the first keystroke, a note left permanently blank after a WebView2 renderer
+  crash, and no last-resort exception handler at all — none of which any unit
+  test in this repo can reach. Treat the checklist as the real gate, not the
+  test count.
+- **The whole-branch review returned 3 Critical, 4 Important and 14 Minor, and
+  triaged 17 deferred minor findings** (ledger items 1-19; the count reconciles
+  because 7/8 and 17/18 are each two views of one gap). All of the Critical and
+  Important findings and every cheap Minor were fixed in one wave. Of the
+  deferred list: items 1, 2, 7, 8, 10, 11, 13, 14, 16 and **19** (the parked
+  menu-geometry finding, which was missing from the earlier count) are **fixed**;
+  items 3, 4, 5, 9, 12, 15, 17 and 18 were triaged **accept as is**; item 6 —
+  the belt-and-braces canonical re-check in `NavigationPolicy` — was
+  independently confirmed correct and kept, and turned out not to be
+  unreachable at all (a drive-root notes folder was hitting it as a false
+  positive; that half is fixed). One finding was **parked with the code
+  untouched** and is recorded under known limitations: the shutdown flush can
+  block the UI thread for roughly 1.3s per note whose saves are failing.
+- **The execution record lives in
+  `.superpowers/sdd/2026-09-02-stickymd-plan-b-wpf-shell/progress.md`** (a
+  git-ignored ledger), alongside `final-fix-wave.md` (the review's full findings
+  and rulings) and `deferred-minors.md`. `git clean -fdx` destroys all of it;
+  `git log` is the durable record.
+
 ## Where Plan A stands
 
-**Complete. 252 tests, 252 passing, 16 commits, zero build warnings.**
-
-Verify with:
-
-```
-dotnet test
-```
-
-Expect: `total: 252, failed: 0, succeeded: 252, skipped: 0`.
-
-### There is nothing to run by hand yet
-
-Plan A produced a **library**. There is no entry point, no window, no
-executable — so there is no manual testing to do at this stage, and nothing
-to click. `dotnet test` is the only verification available until Plan B
-builds `StickyMD.App`. This is intentional, not an omission.
+**Complete at the time: 252 Core tests, 16 commits, zero build warnings.**
+Those 252 are a historical snapshot of Plan A alone and a subset of today's
+390 Core tests (497 total, Core + App — Plan B added both App tests and more
+Core tests). Running `dotnet test` today returns the current total, not 252;
+that number is not a command to reproduce.
 
 ### What Core contains
 
@@ -119,56 +149,174 @@ produces a bug that looks like it lives somewhere else.
 
 ---
 
-## Open findings — resolve these in Plan B, not later
+## Resolved findings
 
-Both were found by the whole-branch review at the end of Plan A and
-deliberately deferred rather than designed hastily at the final gate. Neither
-is a defect inside a single Core type; both are cross-component questions that
-only have a right answer once the shell exists.
+Both were found by the whole-branch review at the end of Plan A, deliberately
+deferred rather than designed hastily at the final gate, and are now resolved
+in Plan B.
 
-### 1. Four components disagree about what a note's path is
+### 1. Path identity → `NotePath.Canonical` and `NotePath.Comparer`
 
-`NoteRepository.EnumerateRoot` returns verbatim-joined paths, while
-`NoteWatcher` emits canonicalised ones. A path from one will not compare equal
-to a path from the other. Any dictionary keyed by note path — the window
-manager's open-notes map is the obvious one — will silently miss.
+`NoteRepository.EnumerateRoot` used to return verbatim-joined paths while
+`NoteWatcher` emitted canonicalised ones, so a path from one would not compare
+equal to a path from the other. Every boundary now produces `NotePath`'s one
+canonical form — the repository, the watcher, the index store, and the window
+manager's open-notes map all key on it, compared with `NotePath.Comparer`.
 
-**Plan B must pick one canonical form and apply it at every boundary.**
+**Known limitation:** canonicalisation resolves `..` and case, but not
+symlinks or 8.3 short names. Two paths that are the same file only through one
+of those will still be treated as two different notes.
 
-### 2. Validation is absent throughout persistence
+### 2. Validation → `StateValidator`, per-entry index loading, `LastLoadIssues`
 
-Deserialization checks shape, not values. `{"color": 99}` loads cleanly and
-then crashes `NotePalette.Get`. The same holds for out-of-range window
-geometry and unknown enum values.
+`StateValidator.ValidateNote` and `.ValidateSettings` clamp or default every
+persisted value that deserialises cleanly but is not usable — never reject,
+per "never die silently". The actual bounds: opacity `0.20`-`1.0`
+(`StateValidator.MinOpacity`/`MaxOpacity`), width/height `160`/`120` minimum up
+to `8192` (`MinNoteWidth`/`MinNoteHeight`/`MaxNoteEdge`), coordinates clamped to
+±`65536` (`MaxCoordinate`, guarding the `int` overflow in
+`WindowPlacement`'s `X + Width`). `NoteIndexStore.Load` deserialises entries one
+at a time, so one bad entry costs that note's geometry, not the whole file.
+Every correction is recorded in `LastLoadIssues` and written to
+`diagnostics.log` by the bootstrap.
 
-**Plan B needs a validation pass on load**, clamping or defaulting invalid
-values, consistent with "never die silently".
+### Known limitations carried into Plan C
+
+- **Path identity** (above): canonicalisation resolves `..` and case, but not
+  symlinks or 8.3 short names.
+- **Recycle Bin deletion is not guaranteed to be recoverable.** A notes root on
+  a network share, a removable drive, or a drive with the Recycle Bin disabled
+  makes `⋯ → Delete` **permanently** delete the file: `SHFileOperationW`
+  returns success and `File.Exists` reports the file gone, so
+  `RecycleBinService` reports `Deleted` for a destroyed file, and the
+  confirmation dialog's "Send to the Recycle Bin?" wording is inaccurate
+  there. There is no reliable pre-flight check for it.
+- **Closing the last open note strands the process with no reachable exit.**
+  `CloseNote` never shuts the app down, `ShutdownMode` is
+  `OnExplicitShutdown`, and both temporary keys (`Ctrl+Shift+Alt+Q`/`N`) live
+  on a note window — with zero windows open there is nothing to press either
+  on. The only way out is ending `StickyMD.exe` from Task Manager (which
+  skips `OnExit` and loses that run's geometry) and relaunching. This is
+  correct architecture, not a bug to fix here: shutting down at zero notes
+  would be what Plan C's tray has to undo, since with a tray StickyMD must
+  keep running with zero notes open so New Note stays reachable. Plan C's
+  tray removes the hazard.
+- **No single-instance guard.** Two StickyMD processes share one WebView2
+  user-data folder and one `notes.json`, and neither knows about the other:
+  whichever writes the index last wins, so one instance can silently undo the
+  other's geometry and `isOpen` state. `CoreWebView2Environment.CreateAsync`
+  against a user-data folder already held by another process is also a
+  documented failure mode. Plan C owns the fix (the single-instance pipe);
+  until then, do not run two copies.
+- **`.stickymd-tmp` files are written INTO the notes root.**
+  `NoteFile.AtomicWriteBytes` writes `note.md.stickymd-tmp` beside the note and
+  then `File.Replace`s it, which sits awkwardly beside the "nothing app-owned
+  is ever written into the notes root" constraint. It is transient, and it is
+  Plan A code with no better option — an atomic replace has to happen on the
+  same volume, and a temp file elsewhere would silently become a copy. But a
+  process killed mid-save leaves the file behind, there is no cleanup pass for
+  it, and OneDrive will happily sync it. The constraint is therefore very
+  nearly absolute rather than absolute. The smoke checklist now has a step that
+  looks for leftovers.
+- **The minimum note size is specified in two different units.**
+  `NoteWindow.xaml`'s `MinWidth="160" MinHeight="120"` are **DIPs**;
+  `StateValidator.MinNoteWidth`/`MinNoteHeight` are the same numbers in
+  **physical pixels**. On a 150% display WPF enforces a 240x180px floor while
+  the validator still considers 160x120px legal, so a note clamped to the
+  validator's minimum comes back larger than it was saved. Left as it is
+  deliberately: the defect is a DIP leaking into a physical-pixel design, and
+  converting one number without the other only moves it. There is a comment at
+  each end.
+- **A window displaced by a rename collision keeps saving to a path it no
+  longer owns, and cannot be closed.** When a rename lands on a path that
+  already has a note open, `WindowManager.Rekey` detaches the displaced window,
+  drops it from `_windows` and shows it the "file is gone" bar so its text
+  stays visible. What it cannot do is stop it saving: the window keeps its
+  `SaveCoordinator` and its autosave timer, so an already-armed 500ms tick — or
+  an `Editor.LostFocus` — writes the displaced text over the file that was just
+  renamed into place, **with no user action at all**. Detaching is not
+  optional (its `NotePath` is now the survivor's map key, so a live
+  `CloseRequested` would close the wrong window), which also means its `✕`,
+  `⋯ → Delete` and the bar's Close are all inert, and being out of `_windows`
+  it never gets `SaveNow`/`Dispose` at exit. This is the honest floor of a
+  detect-and-notify fix: **`INoteWindow` has no stop-saving verb, and Plan C
+  must add one** as part of answering "one file, two owners". Low probability,
+  real text loss.
+- **The shutdown flush can block the UI thread ~1.3s per note whose saves are
+  failing.** `ShutdownWithoutClosingNotes` calls `SaveNow` on every window, and
+  `SaveCoordinator` runs its full retry schedule (100/300/900ms) synchronously
+  on that thread. Ten notes with a locked or full notes root is a ~13s freeze
+  at exit or logoff. Reviewed and **deliberately parked**: skipping the retries
+  on the shutdown path needs a shutdown-mode flag threaded through
+  `SaveCoordinator` and its tests, and a slow logoff when saves are _already_
+  failing is milder than the risk of editing the save path. Fix it with a
+  proper review round, not in passing.
 
 ---
 
 ## What is left
 
-**Plan B — the WPF shell.** Not yet written. Scope:
+**Plan C — shell services.** Not yet written. Scope:
 
-- `NoteWindow` chrome
-- `MonitorEnumerator` (produces the `MonitorInfo` list Win32-side and feeds
-  `WindowPlacement.Clamp`)
-- `WebViewHost` with a shared `CoreWebView2Environment`
-- `HtmlDocumentBuilder` — belongs in Core, but is written in Plan B alongside
-  its only consumer rather than stranded in Plan A without one
-- The render/edit mode toggle
-- The checkbox message bridge (depends on contract 1 above)
-- `IFileDeletionService` for Recycle Bin deletion
-- The resource and navigation policy from spec §6
+- Tray icon with a Recent Notes list (consumes `NoteTitleResolver.Resolve`)
+- Global hotkeys (New Note, Show/Hide All), replacing the temporary
+  `Ctrl+Shift+Alt+N`/`Q` keys Task 14 added
+- Startup registry entry
+- Single-instance pipe
+- A Settings window (`allowRemoteImages`, default colour/opacity/size, theme,
+  hotkeys, notes root)
 
-**Plan B must start from the Spike 0 findings, not from intuition** —
-`docs/spikes/2026-08-22-spike-0-transparency.md`. The transparency and
-WebView2 hosting approach was settled empirically there; re-deriving it from
-first principles will reproduce the two traps listed above.
+---
 
-**Plan C — shell services.** Tray icon with a Recent Notes list (consumes
-`NoteTitleResolver.Resolve`), global hotkeys, startup registry entry,
-single-instance pipe.
+## Contracts Plan C must honour
+
+These are the non-obvious facts Plan C depends on. Getting any of them wrong
+produces a bug that looks like it lives somewhere else.
+
+1. **`WindowManager.CloseNote` is the only thing that may clear `isOpen`.**
+   The tray's Exit and Hide All must use `ShutdownWithoutClosingNotes` and
+   `HideAll` — never close every window through the close-glyph path, or every
+   note restores as closed on the next boot.
+2. **`NoteRepository.CreateNewRecorded` is not thread-safe.** The New Note
+   hotkey must create notes on the UI thread, or add its own lock.
+3. **`LastLoadIssues` on both stores is what the tray balloon should read.**
+   `SettingsStore.LastLoadIssues` and `NoteIndexStore.LastLoadIssues` are
+   already populated by Task 14's bootstrap and written to
+   `diagnostics.log`; Plan C surfaces the same data as a balloon instead of
+   only a log line.
+4. **The temporary `Ctrl+Shift+Alt+Q`/`Ctrl+Shift+Alt+N` keys and
+   `NoteWindow.NewNoteRequested` must be removed** once the tray lands — they
+   exist only because Plan B has no tray and `ShutdownMode` is
+   `OnExplicitShutdown`.
+5. **`SystemTheme.Changed` and `SystemEvents.DisplaySettingsChanged` fire off
+   the dispatcher.** Every handler marshals onto the UI thread before touching
+   a window — see `App.OnSystemThemeChanged` and `App.OnDisplaySettingsChanged`,
+   both of which just `Dispatch(...)` into `WindowManager`.
+6. **The remote-image opt-in is per note, per session, and deliberately
+   unpersisted.** The global equivalent belongs in Settings; do not make the
+   per-note bar's choice sticky.
+7. **`HtmlDocumentBuilder`'s CSP is per shell.** A meta-tag CSP is fixed at
+   parse time, so a Settings change to `allowRemoteImages` must re-navigate
+   every open note's shell (`NoteWindow.ReloadShellAsync`), not just re-render
+   its content.
+8. **Anything that raises `StateChanged` must stamp live geometry through
+   `NoteWindow.CurrentState()`.** `WindowManager.Persist` replaces the whole
+   index entry, and `_state`'s rect is only as fresh as the last event that
+   wrote it — so a handler that passes `_state` straight through persists the
+   geometry the note had when it opened and silently reverts every move since.
+   The `⋯` menu's colour, opacity and pin items, the header `PinButton` and
+   `OnClosing` all go through `CurrentState()` now; `CloseNote` and
+   `ShutdownWithoutClosingNotes` harvest `window.Bounds` themselves because
+   `Detach` has already removed the subscription by then. A new Plan C entry
+   point that skips this reintroduces the bug at that call site only, which is
+   why it is worth knowing rather than rediscovering.
+9. **`WindowManager.OnSystemThemeChanged` early-returns when the resolved
+   `ThemeMode` has not changed, and `NoteWindow.ApplyState` re-navigates the
+   shell only when the theme, colour or remote-image inputs actually differ.**
+   Windows raises `UserPreferenceChanged` for accent colour, wallpaper and a
+   broad slice of `WM_SETTINGCHANGE` traffic, not only light/dark. Both guards
+   exist on purpose: the first stops the storm, the second keeps `ApplyState`
+   safe for callers that do not know about the first.
 
 ---
 

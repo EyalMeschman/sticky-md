@@ -154,12 +154,21 @@ public static class NavigationPolicy
         // path really is inside the note directory. The string test can be
         // fooled by something the segment split did not anticipate; this
         // cannot.
-        if (!NotePath.TryCanonical(noteDirectory, out var root)
-            || !target.StartsWith(root + Path.DirectorySeparatorChar,
-                StringComparison.OrdinalIgnoreCase))
-        {
+        if (!NotePath.TryCanonical(noteDirectory, out var root))
             return Blocked(trimmed, "it resolved outside the note's folder");
-        }
+
+        // A DRIVE ROOT keeps its trailing separator through canonicalisation
+        // ("D:\" stays "D:\", because trimming it would produce the
+        // drive-relative "D:"). Appending another gave "D:\\", which no
+        // resolved path can start with, so a notes root of D:\ refused EVERY
+        // relative .md link in every note -- a real false positive, not a
+        // theoretical one.
+        var prefix = root.EndsWith(Path.DirectorySeparatorChar)
+            ? root
+            : root + Path.DirectorySeparatorChar;
+
+        if (!target.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            return Blocked(trimmed, "it resolved outside the note's folder");
 
         return new NavigationDecision(
             NavigationAction.OpenNote, target, "Opened as a StickyMD note.");

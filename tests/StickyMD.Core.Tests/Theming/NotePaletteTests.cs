@@ -77,6 +77,13 @@ public class NotePaletteTests
         vars["--note-muted"].ShouldBe(theme.Muted);
     }
 
+    [Fact]
+    public void Get_stamps_the_theme_with_the_mode_it_was_resolved_for()
+    {
+        NotePalette.Get(NoteColor.Yellow, ThemeMode.Dark).Mode.ShouldBe(ThemeMode.Dark);
+        NotePalette.Get(NoteColor.Yellow, ThemeMode.Light).Mode.ShouldBe(ThemeMode.Light);
+    }
+
     private static IEnumerable<string> Values(NoteTheme t) =>
         [t.ChromeBg, t.ChromeFg, t.Border, t.ContentBg,
          t.ContentFg, t.Accent, t.CodeBg, t.Muted];

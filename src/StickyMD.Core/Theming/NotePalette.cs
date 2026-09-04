@@ -12,6 +12,12 @@ public enum ThemeMode { Light, Dark }
 /// <param name="Accent">Links, checkbox ticks, focus rings.</param>
 /// <param name="CodeBg">Inline code and fenced block background.</param>
 /// <param name="Muted">Secondary text, rules, blockquote bars.</param>
+/// <param name="Mode">
+/// The light/dark mode this theme was built for. Carried on the theme itself
+/// so a consumer that needs to re-derive a sibling theme -- the ⋯ menu's
+/// colour switch -- cannot drift from the mode the window is actually
+/// showing.
+/// </param>
 public sealed record NoteTheme(
     string ChromeBg,
     string ChromeFg,
@@ -20,7 +26,8 @@ public sealed record NoteTheme(
     string ContentFg,
     string Accent,
     string CodeBg,
-    string Muted);
+    string Muted,
+    ThemeMode Mode = ThemeMode.Light);
 
 /// <summary>
 /// The one place note colors are defined. WPF chrome and rendered HTML both
@@ -30,7 +37,9 @@ public static class NotePalette
 {
     public static IReadOnlyList<NoteColor> All { get; } = Enum.GetValues<NoteColor>();
 
-    public static NoteTheme Get(NoteColor color, ThemeMode mode) => (color, mode) switch
+    public static NoteTheme Get(NoteColor color, ThemeMode mode) => Base(color, mode) with { Mode = mode };
+
+    private static NoteTheme Base(NoteColor color, ThemeMode mode) => (color, mode) switch
     {
         (NoteColor.Yellow, ThemeMode.Light) => new("#FCEE9B", "#3A3320", "#E8D77E", "#FFF7C0", "#3A3320", "#B08900", "#F5E9A8", "#857A50"),
         (NoteColor.Yellow, ThemeMode.Dark) => new("#2E2A19", "#F0E9C8", "#554E2E", "#3A3520", "#F0E9C8", "#E0C34A", "#464026", "#A79E78"),

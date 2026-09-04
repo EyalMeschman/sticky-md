@@ -241,7 +241,16 @@ public static class HtmlDocumentBuilder
             // opaque-origin document does not reliably raise NavigationStarting,
             // so routing it through the host would sometimes do nothing at all.
             if (href && href.charAt(0) === '#') {
-              var anchorName = decodeURIComponent(href.substring(1));
+              // decodeURIComponent throws URIError on a malformed escape, and
+              // "#50%" is a perfectly ordinary heading anchor. Unguarded, that
+              // throw escaped this handler: preventDefault had already run, so
+              // the page did not scroll, nothing was posted to the host, and
+              // there was no error anywhere the user could see. Falling back to
+              // the raw text is right -- an un-decodable fragment was almost
+              // certainly never encoded.
+              var raw = href.substring(1);
+              var anchorName;
+              try { anchorName = decodeURIComponent(raw); } catch (e) { anchorName = raw; }
               var destination = document.getElementById(anchorName)
                 || content.querySelector('[name="' + CSS.escape(anchorName) + '"]');
               if (destination) destination.scrollIntoView();

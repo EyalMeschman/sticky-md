@@ -14,6 +14,18 @@
         SnapsToDevicePixels="True">
 
   <!--
+    MinWidth/MinHeight above are DIPs. StateValidator.MinNoteWidth and
+    .MinNoteHeight are the same numbers in PHYSICAL PIXELS, and the two
+    disagree on any scaled display: at 150% WPF enforces a 240x180px floor
+    while the validator still considers 160x120px legal, so a note clamped to
+    the validator's minimum comes back bigger than it was saved. The values
+    are deliberately left as they are. A DIP leaking into a physical-pixel
+    design is the real defect, and converting one number without the other
+    would only move it. Recorded in STATUS.md's known limitations; whoever
+    touches either number needs to know about the other.
+  -->
+
+  <!--
     AllowsTransparency=True is MANDATORY and is the whole reason this window
     can fade. WS_EX_LAYERED cannot be added to an existing WPF window on
     Windows 11 26200; SetWindowLong returns the previous ex-style with

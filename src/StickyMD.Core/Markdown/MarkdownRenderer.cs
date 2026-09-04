@@ -113,8 +113,41 @@ public sealed class MarkdownRenderer
             ? trimmed[2..]
             : trimmed;
 
-        return $"https://{options.VirtualHost}/{relative}";
+        return $"https://{options.VirtualHost}/{EscapePath(relative)}";
     }
+
+    /// <summary>
+    /// Percent-encodes each path segment, joining with '/'.
+    /// </summary>
+    /// <remarks>
+    /// Unencoded, a filename containing '#' TRUNCATES the URL -- everything
+    /// after it becomes a fragment and the note requests a file that does not
+    /// exist, with no error anywhere. '#' is legal in a Windows filename, so
+    /// this is reachable with an ordinary note.
+    ///
+    /// Separators are NOT escaped -- both '/' and '\' are normalised to '/' --
+    /// so "images/diagram.png" and "images\diagram.png" both still address the
+    /// subfolder.
+    ///
+    /// UNESCAPE BEFORE ESCAPE, and it is not a redundant round trip. "%20" is
+    /// the standard CommonMark encoding for a space in a link destination, so
+    /// encoding blindly turns "my%20file.png" into "my%2520file.png"; the host
+    /// decodes once and asks for a file literally named "my%20file.png". A
+    /// working link stops working, silently -- the exact failure class this
+    /// method exists to close. Decoding first means the input is normalised to
+    /// the depth the host resolves at, matching the traversal test above and
+    /// NavigationPolicy, which decodes ".md" hrefs before resolving them.
+    ///
+    /// A query string does not survive that: "img.png?v=2" becomes a file
+    /// named "img.png?v=2". Deliberate -- there is no server behind note.local
+    /// for a query to mean anything to, and '?' cannot appear in a Windows
+    /// filename, so such a link was relying on the host quietly discarding it.
+    /// </remarks>
+    private static string EscapePath(string relative)
+        => string.Join(
+            '/',
+            relative.Split('/', '\\')
+                .Select(s => Uri.EscapeDataString(Uri.UnescapeDataString(s))));
 
     private static bool EscapesNoteDirectory(string url)
     {

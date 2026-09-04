@@ -18,6 +18,7 @@ public class WindowManagerTests : IDisposable
     private readonly FakeNoteWindowFactory _factory = new();
     private readonly FakeMonitorProvider _monitors = FakeMonitorProvider.TwoAt100Percent();
     private readonly FakeFileDeletionService _deleter = new();
+    private readonly FixedTheme _theme = new();
 
     private NoteIndexStore _indexStore = null!;
     private WindowManager _manager = null!;
@@ -85,7 +86,7 @@ public class WindowManagerTests : IDisposable
             new SettingsStore(Path.Combine(_root, "settings.json")),
             _factory,
             _monitors,
-            new FixedTheme(),
+            _theme,
             _deleter,
             new WriteLedger(),
             new RecoveryStore(Path.Combine(_root, "recovery")),
@@ -246,11 +247,45 @@ public class WindowManagerTests : IDisposable
         // Both assertions matter. CloseNote's own trailing statement
         // ("...with { IsOpen = false }") forces IsOpen back to false no
         // matter what the late event wrote, so IsOpen alone would pass even
-        // with Detach missing -- masking a real leak. X pins that the late
-        // event's geometry never reached the index at all.
+        // with Detach missing -- masking a real leak.
+        //
+        // X pins that the late event's 999 never reached the index. It is NOT
+        // pinning "CloseNote persists nothing": CloseNote deliberately
+        // harvests window.Bounds now (see the test below), and this fake's
+        // Bounds still read 10 because nothing moved it. Move the window here
+        // and 10 becomes the wrong expectation.
         var reloaded = _indexStore.Load().Notes[path];
         reloaded.IsOpen.ShouldBeFalse();
         reloaded.X.ShouldBe(10);
+    }
+
+    [Fact]
+    public void The_close_glyph_persists_where_the_note_actually_was()
+    {
+        // Window.Closing was meant to be the geometry harvest for this path
+        // and cannot be: CloseNote's Detach removes StateChanged, and
+        // NoteWindow.Dispose unsubscribes its own Closing handler before
+        // calling Close(). So a note the user moved and then closed with the
+        // close glyph came back at the position it had when it was last
+        // saved -- the one item on the smoke checklist that would have caught
+        // it had no reopen path to run.
+        var path = WriteNote("n.md");
+        var index = new NoteIndex();
+        index.Notes[path] = StateAt(10, 10);
+
+        var manager = Build(index);
+        manager.RestoreOpenNotes();
+
+        _factory.For(path).Bounds = new PixelRect(640, 480, 420, 500);
+
+        _factory.For(path).RaiseClose();
+
+        var reloaded = _indexStore.Load().Notes[path];
+        reloaded.X.ShouldBe(640);
+        reloaded.Y.ShouldBe(480);
+        reloaded.W.ShouldBe(420);
+        reloaded.H.ShouldBe(500);
+        reloaded.IsOpen.ShouldBeFalse("the close glyph is still the only thing that clears isOpen");
     }
 
     [Fact]
@@ -419,6 +454,78 @@ public class WindowManagerTests : IDisposable
         _factory.For(path).StatesApplied.Count.ShouldBe(before);
     }
 
+    [Fact]
+    public void OnSystemThemeChanged_reapplies_theme_using_live_bounds_not_the_index()
+    {
+        var path = WriteNote("n.md");
+        var index = new NoteIndex();
+        index.Notes[path] = StateAt(10, 10);
+
+        var manager = Build(index);
+        manager.RestoreOpenNotes();
+
+        // App.OnStartup is what actually wires ISystemTheme.Changed to
+        // WindowManager.OnSystemThemeChanged (with a dispatcher marshal that
+        // has no meaning here); mirror that one subscription so this test
+        // exercises the same path a real OS theme flip would.
+        _theme.Changed += manager.OnSystemThemeChanged;
+
+        // Moved on screen but never persisted -- the index still says
+        // (10, 10). OnDisplaySettingsChanged already knows not to trust the
+        // index for geometry; this proves the theme handler makes the same
+        // choice instead of snapping the note back on every OS theme flip.
+        _factory.For(path).Bounds = new PixelRect(555, 20, 300, 340);
+
+        _theme.Mode = ThemeMode.Dark;
+        _theme.Raise();
+
+        _factory.For(path).ThemesApplied.Last().Mode.ShouldBe(ThemeMode.Dark);
+
+        var applied = _factory.For(path).StatesApplied.Last();
+        applied.X.ShouldBe(555, "geometry must come from Bounds, not from the index");
+        applied.Y.ShouldBe(20);
+
+        _indexStore.Load().Notes[path].X
+            .ShouldBe(10, "a theme change alone must not persist geometry");
+    }
+
+    [Fact]
+    public void A_preference_change_that_resolves_to_the_same_theme_applies_nothing()
+    {
+        // SystemTheme raises Changed for UserPreferenceCategory.General,
+        // VisualStyle AND Color, which Windows raises for accent-colour
+        // changes, wallpaper and a broad slice of WM_SETTINGCHANGE traffic --
+        // not only for light/dark. Each one reached every open window's
+        // ApplyState, which re-navigates the WebView shell: a user changing
+        // their accent colour watched every note on the desktop flash and
+        // re-render.
+        var a = WriteNote("a.md");
+        var b = WriteNote("b.md");
+        var index = new NoteIndex();
+        index.Notes[a] = StateAt(10, 10);
+        index.Notes[b] = StateAt(20, 20);
+
+        var manager = Build(index);
+        manager.RestoreOpenNotes();
+
+        _theme.Changed += manager.OnSystemThemeChanged;
+
+        var before = _factory.Created.Select(w => w.StatesApplied.Count).ToList();
+
+        // Mode is untouched: this is the accent-colour case, not a flip.
+        _theme.Raise();
+
+        _factory.Created.Select(w => w.StatesApplied.Count).ShouldBe(before);
+
+        // And a real flip afterwards must still get through -- a cache that
+        // swallowed the first genuine change would be worse than the storm.
+        _theme.Mode = ThemeMode.Dark;
+        _theme.Raise();
+
+        _factory.For(a).ThemesApplied.Last().Mode.ShouldBe(ThemeMode.Dark);
+        _factory.For(b).ThemesApplied.Last().Mode.ShouldBe(ThemeMode.Dark);
+    }
+
     // ---- Watcher ---------------------------------------------------------
 
     [Fact]
@@ -486,6 +593,48 @@ public class WindowManagerTests : IDisposable
         _factory.Created[0].RenamesApplied.ShouldContain(newPath);
         manager.OpenPaths.ShouldContain(newPath);
         manager.OpenPaths.ShouldNotContain(oldPath);
+    }
+
+    [Fact]
+    public void A_rename_onto_an_already_open_note_displaces_that_window_without_writing()
+    {
+        // A move or copy with overwrite, a git checkout, Obsidian: Explorer's
+        // own rename refuses this, plenty of writers do not. Assigning over
+        // the map key dropped b.md's window from the map while it stayed
+        // visible -- still holding b.md's buffer and still autosaving to that
+        // path. Two windows owning one file, and whichever saved last won.
+        //
+        // The displaced window must NOT be disposed: Dispose flushes its
+        // buffer over the file that was just renamed into place, which is the
+        // exact loss this prevents. It gets NotifyFileDeleted instead, so its
+        // text survives and the user can see it behind the "file is gone" bar.
+        var a = WriteNote("a.md", "# a");
+        var b = WriteNote("b.md", "# b");
+
+        var index = new NoteIndex();
+        index.Notes[a] = StateAt(10, 10);
+        index.Notes[b] = StateAt(20, 20);
+
+        var manager = Build(index);
+        manager.RestoreOpenNotes();
+
+        // Captured BEFORE the rename: afterwards both windows report b.md as
+        // their path, so there is no way to pick this one out by path alone.
+        var displaced = _factory.For(b);
+
+        // a.md lands on b.md's path. On disk that is one file now.
+        File.Delete(b);
+        File.Move(a, b);
+
+        manager.OnRenamed(a, b);
+
+        manager.OpenPaths.Count.ShouldBe(1, "one path, one window");
+        manager.OpenPaths.ShouldContain(b);
+
+        displaced.WasToldFileDeleted.ShouldBeTrue("its buffer must stay visible to the user");
+        displaced.IsDisposed.ShouldBeFalse("Dispose would flush it over the renamed file");
+
+        _factory.Created.ShouldAllBe(w => !w.WasSaved, "neither buffer may be written");
     }
 
     [Fact]
@@ -638,6 +787,23 @@ public class WindowManagerTests : IDisposable
         NotePath.IsCanonical(path).ShouldBeTrue();
         _indexStore.Load().Notes[path].IsOpen.ShouldBeTrue();
         _factory.For(path).IsVisible.ShouldBeTrue();
+    }
+
+    [Fact]
+    public void CreateAndOpenNote_enters_edit_mode_but_opening_an_existing_note_does_not()
+    {
+        // Spec §362: a newly created empty note opens directly in edit mode
+        // with focus. Opening an EXISTING note -- even one just created, the
+        // second time around -- must stay in preview.
+        var manager = Build();
+
+        var created = manager.CreateAndOpenNote();
+        _factory.For(created).EnteredEditMode.ShouldBeTrue();
+
+        var existing = WriteNote("existing.md");
+        manager.OpenNote(existing);
+
+        _factory.For(existing).EnteredEditMode.ShouldBeFalse();
     }
 
     // ---- Recovery offering (Step 6) ---------------------------------------

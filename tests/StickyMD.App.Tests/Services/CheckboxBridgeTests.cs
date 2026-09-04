@@ -41,6 +41,22 @@ public class CheckboxBridgeTests
     }
 
     [Fact]
+    public void A_token_that_differs_only_in_hex_case_is_still_accepted()
+    {
+        // The token comparison is deliberately OrdinalIgnoreCase, and every
+        // other test here passes just as well if it silently becomes Ordinal.
+        // ComputeToken returns Convert.ToHexString's UPPERCASE hex, but the
+        // token makes a round trip through JSON and the page's JavaScript
+        // before it comes back, and anything on that path that lowercases it
+        // would turn every checkbox click in the app into a dropped one.
+        var decision = CheckboxBridge.Decide(
+            Buffer, FirstStart, FirstEnd, TokenFor(Buffer).ToLowerInvariant());
+
+        decision.Verdict.ShouldBe(ToggleVerdict.Apply);
+        decision.Markdown.ShouldBe("- [x] first\n- [x] second\n");
+    }
+
+    [Fact]
     public void A_stale_token_drops_the_click_and_leaves_the_buffer_untouched()
     {
         var decision = CheckboxBridge.Decide(

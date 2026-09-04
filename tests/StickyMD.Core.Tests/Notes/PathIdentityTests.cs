@@ -71,6 +71,27 @@ public class PathIdentityTests
     }
 
     [Fact]
+    public void Renaming_a_note_to_the_name_it_already_has_returns_a_canonical_path()
+    {
+        // The NO-OP branch, which the test above does not reach -- it takes the
+        // real-rename path. The trap is that the no-op returns early, so a
+        // caller passing a dot-laden or otherwise non-canonical path used to be
+        // the one caller who could get its own spelling back and then key
+        // WindowManager's open-notes map with it. The file must also still be
+        // there: an early return that had touched the filesystem would be worse
+        // than the wrong string.
+        using var dir = new TempDir();
+        dir.WriteFile("old.md", "x");
+        var repo = new NoteRepository(dir.Path, Clock());
+
+        var renamed = repo.Rename(Path.Combine(dir.Path, ".", "old.md"), "old");
+
+        NotePath.IsCanonical(renamed).ShouldBeTrue(renamed);
+        renamed.ShouldBe(Path.Combine(dir.Path, "old.md"));
+        File.ReadAllText(renamed).ShouldBe("x");
+    }
+
+    [Fact]
     public void A_repository_path_and_a_watcher_path_land_on_the_same_map_entry()
     {
         using var dir = new TempDir();

@@ -66,9 +66,19 @@ public sealed class MonitorEnumerator : IMonitorProvider
         // FirstOrDefault(IsPrimary) and then to monitors[0]; ordering primary
         // first makes those two fallbacks agree rather than quietly disagree
         // depending on enumeration order.
-        mapped.Sort((a, b) => b.IsPrimary.CompareTo(a.IsPrimary));
-
-        return mapped;
+        //
+        // OrderByDescending, NOT List.Sort -- which is what made the
+        // "deterministic" claim above false. Array.Sort special-cases a
+        // three-element range with three SwapIfGreater calls, and that
+        // sequence is not stable: [DISPLAY2, DISPLAY3, DISPLAY1-primary] came
+        // out as [DISPLAY1, DISPLAY3, DISPLAY2], reversing the two
+        // non-primaries. notes.json records the device name, so a
+        // run-to-run reshuffle makes a recorded monitor mean nothing. LINQ's
+        // OrderBy is documented stable, so non-primary monitors keep
+        // EnumDisplayMonitors' order. Verified by
+        // MonitorMappingTests.The_non_primary_monitors_keep_their_enumeration_order,
+        // which fails if List.Sort comes back.
+        return mapped.OrderByDescending(m => m.IsPrimary).ToList();
     }
 
     public IReadOnlyList<MonitorInfo> GetMonitors() => Map(Enumerate());

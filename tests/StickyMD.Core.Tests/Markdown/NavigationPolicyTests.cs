@@ -37,6 +37,19 @@ public class NavigationPolicyTests
         => Click("./other.md").Target.ShouldBe(@"C:\Notes\other.md");
 
     [Fact]
+    public void A_notes_root_that_is_a_drive_root_still_opens_relative_links()
+    {
+        // A drive root canonicalises WITH its trailing separator, so the
+        // containment check used to build the prefix "D:\\" -- which no
+        // resolved path can start with. Every note-to-note link in a notes
+        // root of D:\ was refused as "resolved outside the note's folder".
+        var decision = NavigationPolicy.DecideLinkClick("other.md", @"D:\");
+
+        decision.Action.ShouldBe(NavigationAction.OpenNote);
+        decision.Target.ShouldBe(@"D:\other.md");
+    }
+
+    [Fact]
     public void A_percent_encoded_markdown_link_is_decoded_before_resolving()
     {
         Click("my%20note.md").Target.ShouldBe(@"C:\Notes\my note.md");
