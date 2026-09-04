@@ -11,7 +11,7 @@ public sealed class NoteWatcher : IDisposable
     private readonly string _directory;
     private readonly IWriteLedger _ledger;
     private readonly int _debounceMs;
-    private readonly Dictionary<string, long> _pending = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, long> _pending = NotePath.NewMap<long>();
     private readonly object _gate = new();
     private readonly Timer _flushTimer;
 
@@ -118,9 +118,10 @@ public sealed class NoteWatcher : IDisposable
 
             if (!oldIsNote) { Enqueue(e.FullPath); return; }   // tmp -> a.md : our own save
 
-            Renamed?.Invoke(
-                WriteLedger.Normalize(e.OldFullPath),
-                WriteLedger.Normalize(e.FullPath));
+            if (!NotePath.TryCanonical(e.OldFullPath, out var oldCanonical)) return;
+            if (!NotePath.TryCanonical(e.FullPath, out var newCanonical)) return;
+
+            Renamed?.Invoke(oldCanonical, newCanonical);
         }
         catch (ArgumentException) { /* Unusable path; skip this one event. */ }
         catch (NotSupportedException) { /* Ditto -- e.g. a stray colon. */ }
@@ -183,8 +184,12 @@ public sealed class NoteWatcher : IDisposable
 
     private void Enqueue(string fullPath)
     {
-        var normalized = WriteLedger.Normalize(fullPath);
-        lock (_gate) _pending[normalized] = Environment.TickCount64 + _debounceMs;
+        // TryCanonical rather than Canonical: these paths come straight from
+        // FileSystemWatcher, and one unusable name must cost one event, never
+        // the watcher.
+        if (!NotePath.TryCanonical(fullPath, out var canonical)) return;
+
+        lock (_gate) _pending[canonical] = Environment.TickCount64 + _debounceMs;
     }
 
     private void Flush()

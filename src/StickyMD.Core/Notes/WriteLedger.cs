@@ -34,11 +34,16 @@ public interface IWriteLedger
 public sealed class WriteLedger : IWriteLedger
 {
     private readonly Dictionary<string, WriteFingerprint> _entries =
-        new(StringComparer.OrdinalIgnoreCase);
+        NotePath.NewMap<WriteFingerprint>();
 
     private readonly object _gate = new();
 
-    public static string Normalize(string path) => Path.GetFullPath(path);
+    /// <summary>
+    /// Kept under its historical name; <see cref="NotePath.Canonical"/> is the
+    /// one definition. Two normalisation functions is exactly how Plan A's
+    /// identity mismatch happened, so there is only one now.
+    /// </summary>
+    public static string Normalize(string path) => NotePath.Canonical(path);
 
     public void Record(string path, NoteFile.WriteOutcome outcome)
     {

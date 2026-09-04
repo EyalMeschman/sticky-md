@@ -13,7 +13,11 @@ public sealed class NoteRepository(string notesRoot, IClock clock)
     private const string UntitledStem = "untitled";
     private const int MaxCreateAttempts = 16;
 
-    public string NotesRoot { get; } = notesRoot;
+    /// <summary>
+    /// Canonical. Every path this class produces is built by combining onto
+    /// this, which is what makes them canonical without a second pass.
+    /// </summary>
+    public string NotesRoot { get; } = NotePath.Canonical(notesRoot);
 
     public void EnsureRootExists() => Directory.CreateDirectory(NotesRoot);
 
@@ -21,10 +25,21 @@ public sealed class NoteRepository(string notesRoot, IClock clock)
     {
         if (!Directory.Exists(NotesRoot)) return [];
 
-        return Directory
-            .EnumerateFiles(NotesRoot, "*.md", SearchOption.TopDirectoryOnly)
-            .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        // Combining onto a canonical root already yields canonical paths, but
+        // canonicalise explicitly anyway: this method is the boundary the rest
+        // of the app trusts, and a filename the filesystem accepts while
+        // GetFullPath rejects must cost that one entry, not the listing.
+        var notes = new List<string>();
+
+        foreach (var path in Directory.EnumerateFiles(
+            NotesRoot, "*.md", SearchOption.TopDirectoryOnly))
+        {
+            if (NotePath.TryCanonical(path, out var canonical))
+                notes.Add(canonical);
+        }
+
+        notes.Sort(NotePath.Comparer);
+        return notes;
     }
 
     /// <summary>
@@ -58,6 +73,8 @@ public sealed class NoteRepository(string notesRoot, IClock clock)
 
         for (var attempt = 0; attempt < MaxCreateAttempts; attempt++)
         {
+            // Canonical by construction: NotesRoot is canonical and Combine only
+            // appends a bare filename. No second normalisation pass needed.
             var path = Path.Combine(NotesRoot, $"{date}-{UntitledStem}.md");
 
             for (var n = 2; File.Exists(path); n++)
@@ -112,15 +129,16 @@ public sealed class NoteRepository(string notesRoot, IClock clock)
         if (!name.EndsWith(".md", StringComparison.OrdinalIgnoreCase))
             name += ".md";
 
-        var directory = Path.GetDirectoryName(Path.GetFullPath(currentPath))
-            ?? NotesRoot;
-        var target = Path.Combine(directory, name);
+        var fullCurrent = NotePath.Canonical(currentPath);
 
-        var fullCurrent = Path.GetFullPath(currentPath);
+        var directory = Path.GetDirectoryName(fullCurrent) ?? NotesRoot;
+        var target = NotePath.Canonical(Path.Combine(directory, name));
 
-        // Truly identical, case included: nothing to do.
+        // Truly identical, case included: nothing to do. Return the CANONICAL
+        // form, not the caller's spelling -- a caller that passed a relative or
+        // dot-laden path must not get it back and then key a map with it.
         if (string.Equals(fullCurrent, target, StringComparison.Ordinal))
-            return currentPath;
+            return fullCurrent;
 
         // A case-only change is a real rename the filesystem supports. Skip the
         // overwrite guard in that case -- File.Exists(target) is true because the
