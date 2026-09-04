@@ -18,7 +18,11 @@ public sealed record RenderOptions(bool AllowRemoteImages, string VirtualHost = 
 /// SHA-256 of the markdown at render time. A checkbox click carries it back so
 /// a stale click is rejected rather than misapplied.
 /// </param>
-public sealed record RenderResult(string Html, string Token);
+/// <param name="BlockedRemoteImages">
+/// How many remote images the resource policy refused. Drives the per-note
+/// "Load remote images" bar, which must not appear for a note that has none.
+/// </param>
+public sealed record RenderResult(string Html, string Token, int BlockedRemoteImages = 0);
 
 public sealed class MarkdownRenderer
 {
@@ -40,7 +44,7 @@ public sealed class MarkdownRenderer
         markdown ??= string.Empty;
 
         var document = Markdig.Markdown.Parse(markdown, Pipeline);
-        RewriteImageUrls(document, options);
+        var blockedRemote = RewriteImageUrls(document, options);
 
         using var writer = new StringWriter();
         var renderer = new HtmlRenderer(writer);
@@ -49,16 +53,38 @@ public sealed class MarkdownRenderer
         renderer.Render(document);
         writer.Flush();
 
-        return new RenderResult(writer.ToString(), ComputeToken(markdown));
+        return new RenderResult(writer.ToString(), ComputeToken(markdown), blockedRemote);
     }
 
-    private static void RewriteImageUrls(MarkdownDocument document, RenderOptions options)
+    /// <returns>How many REMOTE images were blocked. A traversal-blocked local
+    /// image is not counted: enabling remote images would not make it load, so
+    /// offering that bar for one would be a lie.</returns>
+    private static int RewriteImageUrls(MarkdownDocument document, RenderOptions options)
     {
+        var blockedRemote = 0;
+
         foreach (var link in document.Descendants<LinkInline>())
         {
             if (!link.IsImage) continue;
-            link.Url = ResolveImageUrl(link.Url, options);
+
+            var original = link.Url;
+            link.Url = ResolveImageUrl(original, options);
+
+            if (link.Url.StartsWith(BlockedScheme, StringComparison.Ordinal)
+                && IsRemote(original))
+            {
+                blockedRemote++;
+            }
         }
+
+        return blockedRemote;
+    }
+
+    private static bool IsRemote(string? url)
+    {
+        var trimmed = url?.Trim() ?? string.Empty;
+        return trimmed.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
     }
 
     internal static string ResolveImageUrl(string? url, RenderOptions options)

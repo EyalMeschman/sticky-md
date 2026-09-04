@@ -23,7 +23,13 @@ public sealed class RecoveryStore(string directory)
 
     public static string FileNameFor(string notePath)
     {
-        var normalized = WriteLedger.Normalize(notePath).ToLowerInvariant();
+        // Lowercased on purpose, and it does NOT violate NotePath's
+        // preserve-case rule: this is a HASH KEY and is never shown to anyone.
+        // Note identity is case-insensitive, and a hash cannot be made
+        // case-insensitive after the fact -- so the folding has to happen
+        // before hashing, or "Standup.md" and "standup.md" would get two
+        // snapshots for one note.
+        var normalized = NotePath.Canonical(notePath).ToLowerInvariant();
 
         // Hash the raw UTF-16 code units rather than encoding to UTF-8 first. Any
         // encoder must decide what to do with an unpaired surrogate: a lenient one

@@ -238,6 +238,50 @@ public class MarkdownRendererTests
     public void Null_markdown_is_treated_as_empty()
         => Renderer.Render(null!, Default).Html.ShouldNotBeNull();
 
+    // ---- blocked remote image count ----
+
+    [Fact]
+    public void A_clean_note_reports_no_blocked_remote_images()
+    {
+        var result = new MarkdownRenderer().Render(
+            "# hi\n\n![local](pic.png)", new RenderOptions(AllowRemoteImages: false));
+
+        result.BlockedRemoteImages.ShouldBe(0);
+    }
+
+    [Fact]
+    public void Blocked_remote_images_are_counted()
+    {
+        var result = new MarkdownRenderer().Render(
+            "![a](https://example.com/a.png)\n\n![b](http://example.com/b.png)",
+            new RenderOptions(AllowRemoteImages: false));
+
+        result.BlockedRemoteImages.ShouldBe(2);
+    }
+
+    [Fact]
+    public void Allowed_remote_images_are_not_counted_as_blocked()
+    {
+        var result = new MarkdownRenderer().Render(
+            "![a](https://example.com/a.png)",
+            new RenderOptions(AllowRemoteImages: true));
+
+        result.BlockedRemoteImages.ShouldBe(0);
+    }
+
+    [Fact]
+    public void A_traversal_blocked_local_image_is_not_counted_as_a_remote_one()
+    {
+        // Enabling remote images would not make ../secret.png load, so
+        // offering the "Load remote images" bar for it would be a lie.
+        var result = new MarkdownRenderer().Render(
+            "![x](../outside/secret.png)",
+            new RenderOptions(AllowRemoteImages: false));
+
+        result.Html.ShouldContain(MarkdownRenderer.BlockedScheme);
+        result.BlockedRemoteImages.ShouldBe(0);
+    }
+
     // ---- helpers ----
 
     private static readonly Regex SpanPair = new(
