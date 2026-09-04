@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      The Windows version suffix is REQUIRED, not stylistic.
+      WebView2CompositionControl renders through D3DImage and needs the Windows
+      SDK WinRT projections, which only flow in from a Windows-version-specific
+      TFM. Plain net10.0-windows throws FileNotFoundException for
+      Microsoft.Windows.SDK.NET from inside TryInitializeD3DImage(); the
+      stack trace that points at D3D never mentions the target framework.
+    -->
+    <TargetFramework>net10.0-windows10.0.17763.0</TargetFramework>
+    <OutputType>WinExe</OutputType>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>StickyMD.App</RootNamespace>
+    <AssemblyName>StickyMD</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <PlatformTarget>x64</PlatformTarget>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4129.50" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\StickyMD.Core\StickyMD.Core.csproj" />
+  </ItemGroup>
+
+</Project>
