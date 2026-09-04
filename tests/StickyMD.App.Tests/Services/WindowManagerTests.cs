@@ -136,7 +136,7 @@ public class WindowManagerTests : IDisposable
     }
 
     [Fact]
-    public void The_close_glyph_clears_isOpen_and_disposes_the_window()
+    public void The_close_glyph_hides_the_note_without_clearing_isOpen()
     {
         var path = WriteNote("n.md");
         var index = new NoteIndex();
@@ -147,7 +147,10 @@ public class WindowManagerTests : IDisposable
 
         _factory.For(path).RaiseClose();
 
-        _indexStore.Load().Notes[path].IsOpen.ShouldBeFalse();
+        // The close glyph means "off my screen", not "off my desktop set".
+        // isOpen survives so the next launch brings the note back; the only
+        // way out is a real deletion. Nothing in the app clears isOpen now.
+        _indexStore.Load().Notes[path].IsOpen.ShouldBeTrue();
         _factory.For(path).IsDisposed.ShouldBeTrue();
         manager.OpenPaths.ShouldBeEmpty();
     }
@@ -244,10 +247,12 @@ public class WindowManagerTests : IDisposable
 
         _factory.For(path).RaiseClose();
 
-        // Both assertions matter. CloseNote's own trailing statement
-        // ("...with { IsOpen = false }") forces IsOpen back to false no
-        // matter what the late event wrote, so IsOpen alone would pass even
-        // with Detach missing -- masking a real leak.
+        // X is the whole test. CloseNote used to end in
+        // "with { IsOpen = false }", which forced IsOpen back regardless of
+        // what the late event wrote -- so an IsOpen assertion passed even with
+        // Detach missing, masking a real leak. Now that the close glyph leaves
+        // isOpen alone, that crutch is gone and X is the only thing standing
+        // between this suite and a resurrected window.
         //
         // X pins that the late event's 999 never reached the index. It is NOT
         // pinning "CloseNote persists nothing": CloseNote deliberately
@@ -255,8 +260,8 @@ public class WindowManagerTests : IDisposable
         // Bounds still read 10 because nothing moved it. Move the window here
         // and 10 becomes the wrong expectation.
         var reloaded = _indexStore.Load().Notes[path];
-        reloaded.IsOpen.ShouldBeFalse();
         reloaded.X.ShouldBe(10);
+        reloaded.IsOpen.ShouldBeTrue("nothing clears isOpen any more");
     }
 
     [Fact]
@@ -285,7 +290,7 @@ public class WindowManagerTests : IDisposable
         reloaded.Y.ShouldBe(480);
         reloaded.W.ShouldBe(420);
         reloaded.H.ShouldBe(500);
-        reloaded.IsOpen.ShouldBeFalse("the close glyph is still the only thing that clears isOpen");
+        reloaded.IsOpen.ShouldBeTrue("the close glyph hides; it must not drop the note from the desktop set");
     }
 
     [Fact]

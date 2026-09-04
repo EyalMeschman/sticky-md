@@ -15,6 +15,16 @@
     <RootNamespace>StickyMD.App</RootNamespace>
     <AssemblyName>StickyMD</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <!--
+      The exe icon: what Explorer, a pinned taskbar shortcut and Alt+Tab show.
+      Notes set ShowInTaskbar="False" on purpose, so this is the only place the
+      app has a face until Plan C's tray, which reuses the same file. Built
+      from NotePalette's Yellow/Light row so the icon and a default note are
+      the same yellow.
+    -->
+    <ApplicationIcon>..\..\assets\stickymd.ico</ApplicationIcon>
+
     <PlatformTarget>x64</PlatformTarget>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>

@@ -47,22 +47,35 @@ public class NoteTitleResolverTests
             .ShouldBe("Yes");
 
     [Fact]
-    public void Falls_back_to_first_non_empty_line_stripping_hashes()
+    public void A_sub_heading_is_a_title_when_there_is_no_h1()
         => NoteTitleResolver.Resolve("## Sub heading only\n\nbody", Path)
             .ShouldBe("Sub heading only");
 
     [Fact]
-    public void Falls_back_to_first_non_empty_line_for_plain_text()
-        => NoteTitleResolver.Resolve("\n   just some text\nmore\n", Path)
-            .ShouldBe("just some text");
+    public void A_markdown_table_does_not_become_the_title()
+    {
+        // The bug that killed the first-non-empty-line rule. The user renamed
+        // the file to say what the note was, pasted a shortcuts table, and the
+        // header started reading "|Shortcut|Action|".
+        var table = "|Shortcut|Action|\n|---|---|\n|Ctrl+B|Split clip|\n";
+
+        NoteTitleResolver.Resolve(table, Path).ShouldBe("my-file");
+    }
 
     [Fact]
-    public void Truncates_long_fallback_to_60_chars()
-    {
-        var line = new string('x', 100);
+    public void Plain_prose_falls_back_to_the_filename()
+        => NoteTitleResolver.Resolve("\n   just some text\nmore\n", Path)
+            .ShouldBe("my-file");
 
-        NoteTitleResolver.Resolve(line, Path).Length.ShouldBe(60);
-    }
+    [Fact]
+    public void A_list_does_not_become_the_title()
+        => NoteTitleResolver.Resolve("- milk\n- eggs\n", Path).ShouldBe("my-file");
+
+    [Fact]
+    public void A_hashtag_is_not_a_heading()
+        // No space after the '#', so CommonMark says this is not a heading and
+        // neither do we -- otherwise "#todo" at the top of a note wins.
+        => NoteTitleResolver.Resolve("#todo buy milk\n", Path).ShouldBe("my-file");
 
     [Fact]
     public void Does_not_truncate_a_real_heading()
@@ -86,6 +99,11 @@ public class NoteTitleResolverTests
 
     [Fact]
     public void Setext_underline_must_be_all_equals()
+        // "=== not underline" is not a setext rule, so "Hello" is just prose
+        // and the filename wins. This asserted "Hello" while the
+        // first-non-empty-line rule existed, which made it pass for the wrong
+        // reason: it could not tell a recognised setext heading from a line
+        // the fallback happened to pick up.
         => NoteTitleResolver.Resolve("Hello\n=== not underline\n", Path)
-            .ShouldBe("Hello");
+            .ShouldBe("my-file");
 }

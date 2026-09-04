@@ -78,12 +78,19 @@
                    IsHitTestVisible="False"
                    Text="untitled" />
 
-        <!-- Revealed on hover; always present so layout never shifts. -->
+        <!--
+          Dimmed at rest, full on hover; always present so layout never
+          shifts. This rested at Opacity="0" until the app was first run by
+          hand, and the glyphs turned out to be undiscoverable: on a dark note
+          there was nothing at all to suggest the header had controls.
+          RestingGlyphOpacity in the code-behind is the other half of this
+          number and the two must agree.
+        -->
         <StackPanel x:Name="HeaderButtons"
                     Grid.Column="1"
                     Orientation="Horizontal"
                     Margin="0,0,4,0"
-                    Opacity="0">
+                    Opacity="0.45">
           <Button x:Name="ColorButton" Content="&#x25CF;" ToolTip="Colour"
                   Style="{DynamicResource HeaderGlyph}" />
           <Button x:Name="PinButton" Content="&#x1F4CC;" ToolTip="Always on top"

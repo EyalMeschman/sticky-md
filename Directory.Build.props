@@ -5,6 +5,17 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
-    <InvariantGlobalization>true</InvariantGlobalization>
+    <!--
+      InvariantGlobalization is deliberately NOT set. It crashes every WPF
+      TextBox: the caret setup calls InputLanguageSource.CurrentInputLanguage,
+      which does new CultureInfo(1033), and invariant mode throws
+      CultureNotFoundException from inside a layout pass. The note editor, the
+      rename prompt and the plain-text fallback are all TextBoxes, so the app
+      dies on the first note it opens. The one place that genuinely needs a
+      fixed culture, the new-note filename date, says so at its own call site
+      instead: NoteRepository.CreateNewRecorded passes InvariantCulture, and
+      NoteRepositoryTests pins it under ar-SA so re-adding this switch fails a
+      test rather than the app.
+    -->
   </PropertyGroup>
 </Project>

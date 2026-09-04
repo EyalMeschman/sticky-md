@@ -313,7 +313,8 @@ public sealed class WindowManager : IDisposable
     private void OnNewNoteRequested() => CreateAndOpenNote();
 
     /// <summary>
-    /// The close glyph. THE ONLY path that clears <c>isOpen</c>.
+    /// The close glyph. Takes the note off the screen and leaves
+    /// <c>isOpen</c> ALONE, so the next launch brings it back.
     /// </summary>
     public void CloseNote(string path)
     {
@@ -357,7 +358,18 @@ public sealed class WindowManager : IDisposable
             };
         }
 
-        Persist(canonical, state with { IsOpen = false });
+        // isOpen is deliberately NOT cleared. The close glyph means "off my
+        // screen", not "off my desktop set" -- a note the user opened returns
+        // on the next launch, and the only way out is a real deletion through
+        // the more menu. Nothing in the app clears isOpen any more: exit and
+        // logoff never did, and this path stopped after the first person to
+        // run the app closed three notes and found them gone.
+        //
+        // A note merely PRESENT in the notes root still gets no window (see
+        // RestoreOpenNotes) -- that rule is what keeps an Obsidian vault from
+        // carpeting the desktop, and it is the reason dropping the third state
+        // costs so little.
+        Persist(canonical, state);
     }
 
     /// <summary>Hide All. <c>isOpen</c> is untouched, by design.</summary>

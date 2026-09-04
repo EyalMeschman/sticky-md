@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace StickyMD.Core.Notes;
 
 /// <summary>
@@ -69,7 +71,13 @@ public sealed class NoteRepository(string notesRoot, IClock clock)
     {
         EnsureRootExists();
 
-        var date = clock.UtcNow.ToString("yyyy-MM-dd");
+        // InvariantCulture is required, not tidiness. "yyyy" resolves against
+        // the current culture's CALENDAR, so under a Hijri-calendar culture
+        // (ar-SA) today's note would be named 1448-something and would sort
+        // apart from every other note in the folder. Note filenames are a
+        // user-visible, on-disk, sortable convention and must not move with
+        // the machine's locale.
+        var date = clock.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
         for (var attempt = 0; attempt < MaxCreateAttempts; attempt++)
         {

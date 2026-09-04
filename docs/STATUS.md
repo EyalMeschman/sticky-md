@@ -49,7 +49,7 @@ Plan is `docs/plans/2026-09-02-stickymd-plan-b-wpf-shell.md`. **All 14 tasks
 are implemented and tested**, the whole-branch review has run, and its single
 fix wave is applied. What is left before Plan C is the checklist, by hand.
 
-- **497 tests pass, 0 failed, 0 build warnings** (390 Core + 107 App).
+- **498 tests pass, 0 failed, 0 build warnings** (391 Core + 107 App).
 - **Both of Plan A's open findings are resolved** — see Resolved findings
   below.
 - **Nothing in Plan B has ever been run by a human.** Task 14 wrote the manual
@@ -87,7 +87,7 @@ fix wave is applied. What is left before Plan C is the checklist, by hand.
 
 **Complete at the time: 252 Core tests, 16 commits, zero build warnings.**
 Those 252 are a historical snapshot of Plan A alone and a subset of today's
-390 Core tests (497 total, Core + App — Plan B added both App tests and more
+391 Core tests (498 total, Core + App — Plan B added both App tests and more
 Core tests). Running `dotnet test` today returns the current total, not 252;
 that number is not a command to reproduce.
 
@@ -242,6 +242,18 @@ Every correction is recorded in `LastLoadIssues` and written to
   detect-and-notify fix: **`INoteWindow` has no stop-saving verb, and Plan C
   must add one** as part of answering "one file, two owners". Low probability,
   real text loss.
+- **`InvariantGlobalization` must stay unset.** It was set solution-wide in
+  `Directory.Build.props` and made the app crash on the first note it ever
+  opened: WPF's caret setup calls `InputLanguageSource.CurrentInputLanguage`,
+  which does `new CultureInfo(1033)`, and invariant mode throws
+  `CultureNotFoundException` from inside a layout pass. Every TextBox is
+  affected, so the editor, the rename prompt and the plain-text fallback all
+  die. Found by launching the app for the first time, after 497 green tests and
+  three reviews had all passed it. `NoteRepository` now asks for
+  `InvariantCulture` at the one call site that needs it, and
+  `NoteRepositoryTests.The_new_note_filename_date_does_not_follow_the_machine_calendar`
+  cannot even run under invariant mode, so re-adding the switch fails a test
+  instead of the app.
 - **The shutdown flush can block the UI thread ~1.3s per note whose saves are
   failing.** `ShutdownWithoutClosingNotes` calls `SaveNow` on every window, and
   `SaveCoordinator` runs its full retry schedule (100/300/900ms) synchronously
@@ -273,10 +285,16 @@ Every correction is recorded in `LastLoadIssues` and written to
 These are the non-obvious facts Plan C depends on. Getting any of them wrong
 produces a bug that looks like it lives somewhere else.
 
-1. **`WindowManager.CloseNote` is the only thing that may clear `isOpen`.**
-   The tray's Exit and Hide All must use `ShutdownWithoutClosingNotes` and
-   `HideAll` — never close every window through the close-glyph path, or every
-   note restores as closed on the next boot.
+1. **Nothing may clear `isOpen`, including `CloseNote`.** Revised 2026-09-04
+   after the app was first run by hand: `✕` used to clear it, the first user
+   closed three notes, relaunched, and read their absence as a restore bug.
+   `✕` is now "off my screen" and `⋯ → Delete` is the only thing that removes a
+   note from the restore set, taking the index entry with the file. So Plan C's
+   tray gets no "forget this note" action short of deletion, and its Exit and
+   Hide All must still use `ShutdownWithoutClosingNotes` and `HideAll`. What
+   keeps the restore set bounded is unchanged: a `.md` merely present in the
+   notes root spawns no window, so only notes the user actually opened come
+   back.
 2. **`NoteRepository.CreateNewRecorded` is not thread-safe.** The New Note
    hotkey must create notes on the UI thread, or add its own lock.
 3. **`LastLoadIssues` on both stores is what the tray balloon should read.**

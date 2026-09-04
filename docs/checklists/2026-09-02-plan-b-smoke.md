@@ -105,16 +105,14 @@ Run these four together. **If all four fail, the drag handler moved to the
 
 ## Geometry and monitors
 
-- [ ] **Close-and-reopen geometry.** Plan B has no tray, no Recent Notes and no
-      Open command, and `✕` sets `isOpen = false` so a restart will not bring
-      the note back either — a relative link is the only reopen path there is.
-      Set it up: note **A** contains `[b](b.md)` and note **B** exists in the
-      same folder. Drag B somewhere distinctive and resize it, close B with
-      `✕`, then click the link in A. **B reopens at the place and size it had
-      when it was closed**, not where it was when it opened. This is the only
-      item that catches the close-glyph geometry harvest
+- [ ] **Close-and-reopen geometry.** Drag a note somewhere distinctive and
+      resize it, close it with `✕`, then exit and relaunch. **It comes back at
+      the place and size it had when you closed it**, not where it was when it
+      opened. This catches the close-glyph geometry harvest
       (`WindowManager.CloseNote`); pinned headlessly by
       `WindowManagerTests.The_close_glyph_persists_where_the_note_actually_was`.
+      A relative `[b](b.md)` link reopens a note within one session, if you
+      want the faster loop.
 - [ ] Drag a note to DISPLAY2, restart: it comes back on DISPLAY2 at the same place.
 - [ ] Unplug or disable DISPLAY2 with a note on it: the note is clamped onto the remaining display **without a restart**.
 - [ ] Change resolution with notes open: any off-screen note is clamped.
@@ -125,7 +123,12 @@ Run these four together. **If all four fail, the drag handler moved to the
 The headline hazard. Get any of these wrong and the desktop empties.
 
 - [ ] Open three notes. Exit with `Ctrl+Shift+Alt+Q`. Restart. **All three come back.**
-- [ ] Open three notes. Close one with `✕`. Restart. **Two come back.**
+- [ ] Open three notes. Close one with `✕`. Restart. **All three come back** —
+      `✕` means "off my screen", not "off my desktop set". Nothing in the app
+      clears `isOpen` any more.
+- [ ] Open three notes. `⋯ → Delete` one. Restart. **Two come back, and the
+      third is in the Recycle Bin.** Deletion is now the only way a note leaves
+      the restore set, which is what makes the item above safe.
 - [ ] Hide All / Show All — **N/A until Plan C's tray.** There is no temporary
       Hide key (adding one would strand the app: with every window hidden
       there is no window left to press the exit key on, and no Show All until

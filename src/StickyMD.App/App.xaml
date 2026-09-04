@@ -11,6 +11,17 @@
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0" />
       <Setter Property="Cursor" Value="Arrow" />
+
+      <!--
+        The glyphs had NO Foreground until the app was run by hand, so they
+        took Button's default near-black in every theme and were invisible on
+        any dark note. White is not the fix either: it would then vanish on
+        Yellow/Light. Both brushes come from the palette via NoteWindow's
+        Resources (see ApplyTheme), which is the same ChromeFg the title text
+        already uses, so the glyphs are dark on light chrome and light on dark
+        chrome for all fourteen colour/mode combinations.
+      -->
+      <Setter Property="Foreground" Value="{DynamicResource HeaderGlyphFg}" />
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
@@ -19,7 +30,13 @@
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Chrome" Property="Background" Value="#25000000" />
+                <!--
+                  Was a fixed 15% black, which is invisible on a dark note.
+                  HeaderGlyphHover is ChromeFg at low alpha, so the hover
+                  wash always contrasts with the chrome it sits on.
+                -->
+                <Setter TargetName="Chrome" Property="Background"
+                        Value="{DynamicResource HeaderGlyphHover}" />
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>

@@ -188,39 +188,67 @@ reconcile, and the registry can change behind the app's back (§7, Startup).
 `New Note` creates `<yyyy-MM-dd>-untitled.md` in the notes root and opens it immediately — no
 dialog. Collisions get a numeric suffix (`2026-08-22-untitled-2.md`).
 
-The **display title** is derived by `NoteTitleResolver` and is independent of the filename. To
-change the filename, `⋯ → Rename` renames the file on disk and re-keys the index entry.
+The **display title** is the note's first Markdown heading if it has one, and otherwise the
+filename. To change the filename, `⋯ → Rename` renames the file on disk and re-keys the index
+entry.
 
-### Three states, not two
+> **Revised 2026-09-04, after Plan B was first run by a human.** The title was originally
+> "derived from content, independent of the filename", with a third resolution rule — first
+> non-empty line, leading `#` stripped, truncated to 60 characters — under the two heading rules.
+> Every test fed that rule prose and it read fine. The first real note anybody pasted in was a
+> Markdown table, and the title became `|Shortcut|Action|` on a file the user had deliberately
+> renamed to say what the note was. The rule promoted a fragment of content over a name chosen on
+> purpose, and it fired for any note starting with a table, list, quote or paragraph. It is gone.
+> Headings now match at **any** level (`## Setup` is a title), which is what the first-line rule
+> was really covering, and the filename is the fallback because the user controls it.
 
-| State          | Meaning                                                  | Set by                                               |
-| -------------- | -------------------------------------------------------- | ---------------------------------------------------- |
-| `isOpen: true` | This note belongs on my desktop and returns next startup | Opening a note; `✕` clears it                        |
-| Hidden         | Temporarily not drawn                                    | Hide All / `Ctrl+Alt+S` — **never touches `isOpen`** |
-| Instantiated   | A `NoteWindow` + WebView2 exists in memory               | `WindowManager`                                      |
+### `isOpen` is set once and never cleared
+
+> **Revised 2026-09-04, after Plan B was first run by a human.** This section
+> originally made `✕` clear `isOpen`, so a closed note did not come back. The
+> first person to use the app closed three notes, relaunched, and reasonably
+> read their absence as the app failing to restore them. `✕` now means "off my
+> screen", `⋯ → Delete` is the only way a note leaves the desktop set, and the
+> table below is what the code does. The paragraphs on why shutdown must not
+> clear `isOpen` are unchanged and still binding — that hazard was never the
+> part in doubt.
+
+| State          | Meaning                                                  | Set by                                                    |
+| -------------- | -------------------------------------------------------- | --------------------------------------------------------- |
+| `isOpen: true` | This note belongs on my desktop and returns next startup | Opening a note. **Nothing clears it.**                    |
+| Hidden         | Temporarily not drawn                                    | `✕`, Hide All / `Ctrl+Alt+S` — **never touches `isOpen`** |
+| Instantiated   | A `NoteWindow` + WebView2 exists in memory               | `WindowManager`                                           |
 
 ```
-✕ on note        → isOpen = false, dispose window + WebView2
+✕ on note        → isOpen unchanged, dispose window + WebView2
 Hide All         → isOpen unchanged, Visibility.Hidden
 Exit StickyMD    → isOpen unchanged, process exits
+⋯ → Delete       → file to the Recycle Bin, index entry removed
 Next startup     → recreate every isOpen == true note
 ```
 
-**Only an explicit user Close Note (`✕`) may set `isOpen = false`.** Application exit, Windows
-logoff or shutdown, and internal window disposal must never do so.
+**Nothing in the app may set `isOpen = false`.** Application exit, Windows logoff or shutdown,
+internal window disposal, and the close glyph must all leave it alone. A note leaves the desktop
+set exactly one way: the user deletes it, and the index entry goes with the file.
 
-This needs stating because WPF closes every window during application shutdown. If the ordinary
-`Window.Closing` handler carried the `✕` logic, then:
+What keeps this from carpeting the desktop is the rule below: a `.md` merely present in the notes
+root spawns no window. Only notes the user has actually opened carry an `isOpen` entry, so the
+restore set is what they built by hand, not the contents of a folder.
+
+The shutdown hazard still needs stating, because WPF closes every window during application
+shutdown. If the ordinary `Window.Closing` handler carried close-glyph logic, then:
 
 ```
 User chooses Exit → WPF closes all NoteWindows → each handler sets isOpen = false
                   → next boot restores zero notes
 ```
 
-That is precisely the failure the three-state model exists to prevent, and it would break success
-criterion 3. Implementation therefore routes `✕` through an explicit `WindowManager.CloseNote()`
-that clears `isOpen`, while `Window.Closing` triggered by shutdown or disposal only persists
-geometry. `SessionEnding` follows the shutdown path.
+That is precisely the failure this model exists to prevent, and it would break success
+criterion 3. Implementation therefore routes `✕` through an explicit `WindowManager.CloseNote()`,
+while `Window.Closing` triggered by shutdown or disposal only persists geometry. `SessionEnding`
+follows the shutdown path. `CloseNote` no longer clears `isOpen`, so there is now no code path at
+all that could produce the failure above — but the routing stays, because it is also where the
+geometry harvest and the buffer flush live.
 
 A `.md` added to the notes root **spawns no window** — pointing StickyMD at an Obsidian vault must
 not carpet the desktop. It becomes available to StickyMD, but does not enter Recent Notes until it
@@ -293,8 +321,9 @@ With `CaptionHeight=0` the whole window is client area, so header buttons behave
 > the window instead of scrolling, and text selection inside a note becomes impossible. There
 > is no exception, warning, or crash. Verified the hard way in Spike 0.
 
-`✕` hides the note and sets `isOpen = false`. **It never deletes the file.** Deletion is
-`⋯ → Delete`, which sends the file to the Recycle Bin via `RecycleBinService`.
+`✕` takes the note off the screen and leaves `isOpen` alone, so it returns on the next launch.
+**It never deletes the file.** Deletion is `⋯ → Delete`, which sends the file to the Recycle Bin
+via `RecycleBinService`, and that is the only thing that removes a note from the desktop set.
 
 The `⋯` menu is exactly: **Rename…**, **Color ▸**, **Opacity ▸**, **Always on Top ☑**, ─,
 **Delete**. Every entry maps to a v1 feature; nothing else belongs there.

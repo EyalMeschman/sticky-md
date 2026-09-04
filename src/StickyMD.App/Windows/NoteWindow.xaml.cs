@@ -53,8 +53,8 @@ public interface INoteWindow : IDisposable
     void ShowRecovered(RecoveryEnvelope envelope);
 
     /// <summary>
-    /// The user clicked the close glyph. THE ONLY event that may clear
-    /// <c>isOpen</c>.
+    /// The user clicked the close glyph. Takes the note off the screen;
+    /// <c>isOpen</c> survives, so it returns on the next launch.
     /// </summary>
     event Action<string>? CloseRequested;
 
@@ -266,7 +266,7 @@ public sealed partial class NoteWindow : Window, INoteWindow
         };
 
         Header.MouseEnter += (_, _) => FadeHeaderButtons(1.0);
-        Header.MouseLeave += (_, _) => FadeHeaderButtons(0.0);
+        Header.MouseLeave += (_, _) => FadeHeaderButtons(RestingGlyphOpacity);
 
         CloseButton.Click += (_, _) => CloseRequested?.Invoke(NotePath);
 
@@ -278,8 +278,20 @@ public sealed partial class NoteWindow : Window, INoteWindow
         };
 
         MoreButton.Click += (_, _) => ShowMoreMenu(MoreButton);
-        ColorButton.Click += (_, _) => ShowMoreMenu(ColorButton);
+
+        // The colour glyph opens COLOURS, not the whole menu. Both buttons
+        // called ShowMoreMenu until the app was first run by hand, so the two
+        // glyphs did exactly the same thing and the colour one was decoration.
+        ColorButton.Click += (_, _) => ShowColourMenu(ColorButton);
     }
+
+    /// <summary>
+    /// What the header glyphs fade back to when the mouse leaves. NOT zero:
+    /// invisible controls are undiscoverable, and the first person to run the
+    /// app could not find them. Kept in step with HeaderButtons' Opacity in
+    /// NoteWindow.xaml.
+    /// </summary>
+    private const double RestingGlyphOpacity = 0.45;
 
     private void FadeHeaderButtons(double to)
         => HeaderButtons.BeginAnimation(
@@ -299,44 +311,12 @@ public sealed partial class NoteWindow : Window, INoteWindow
         menu.Items.Add(rename);
 
         var colours = new System.Windows.Controls.MenuItem { Header = "Color" };
-
-        foreach (var colour in NotePalette.All)
-        {
-            var item = new System.Windows.Controls.MenuItem
-            {
-                Header = colour.ToString(),
-                IsCheckable = true,
-                IsChecked = colour == _state.Color,
-            };
-
-            var chosen = colour;
-            item.Click += (_, _) => ApplyColour(chosen);
-            colours.Items.Add(item);
-        }
-
+        colours.Items.Add(SwatchRowItem(() => menu.IsOpen = false));
         menu.Items.Add(colours);
 
-        var opacities = new System.Windows.Controls.MenuItem { Header = "Opacity" };
-
-        // Floored ABOVE StateValidator.MinOpacity (0.30 here vs. 0.20 there)
-        // for the same reason that floor exists: below roughly 20% a note is
-        // invisible and cannot be found with the mouse to be fixed. Offering
-        // 10% here would let the user create a state they cannot get out of.
-        foreach (var value in new[] { 1.0, 0.9, 0.75, 0.5, 0.3 })
-        {
-            var item = new System.Windows.Controls.MenuItem
-            {
-                Header = $"{value * 100:0}%",
-                IsCheckable = true,
-                IsChecked = Math.Abs(_state.Opacity - value) < 0.001,
-            };
-
-            var chosen = value;
-            item.Click += (_, _) => ApplyOpacity(chosen);
-            opacities.Items.Add(item);
-        }
-
-        menu.Items.Add(opacities);
+        var opacity = new System.Windows.Controls.MenuItem { Header = "Opacity" };
+        opacity.Items.Add(OpacitySliderItem());
+        menu.Items.Add(opacity);
 
         var pin = new System.Windows.Controls.MenuItem
         {
@@ -361,6 +341,140 @@ public sealed partial class NoteWindow : Window, INoteWindow
         menu.PlacementTarget = anchor;
         menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
         menu.IsOpen = true;
+    }
+
+    /// <summary>
+    /// Colours only, hung off the colour glyph. Same swatch row the more
+    /// menu's Color submenu uses, so the two can never drift apart.
+    /// </summary>
+    private void ShowColourMenu(System.Windows.Controls.Button anchor)
+    {
+        var menu = new System.Windows.Controls.ContextMenu();
+        menu.Items.Add(SwatchRowItem(() => menu.IsOpen = false));
+
+        menu.PlacementTarget = anchor;
+        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        menu.IsOpen = true;
+    }
+
+    /// <summary>
+    /// The seven palette colours as a row of clickable swatches.
+    /// </summary>
+    /// <remarks>
+    /// They were a list of colour NAMES until the app was first run by hand.
+    /// A text list is the wrong control for choosing a colour -- you cannot
+    /// see what you are picking -- and it read as a bug rather than a design.
+    ///
+    /// Each swatch paints the note's CONTENT background, not its chrome: that
+    /// is the large surface the user will actually be looking at. Both come
+    /// from NotePalette.Get for the resolved mode, so a swatch is showing the
+    /// real colour rather than a hardcoded approximation of it, and the chrome
+    /// and the rendered HTML still agree because nothing here invents a value.
+    ///
+    /// StaysOpenOnClick is set because the click is handled by a child Border,
+    /// not by the MenuItem -- without it WPF closes the menu on mouse-down and
+    /// the Border never sees the mouse-up.
+    /// </remarks>
+    private System.Windows.Controls.MenuItem SwatchRowItem(Action close)
+    {
+        var row = new System.Windows.Controls.StackPanel
+        {
+            Orientation = System.Windows.Controls.Orientation.Horizontal,
+            Margin = new Thickness(2),
+        };
+
+        foreach (var colour in NotePalette.All)
+        {
+            var theme = NotePalette.Get(colour, _resolvedMode);
+            var selected = colour == _state.Color;
+
+            var swatch = new System.Windows.Controls.Border
+            {
+                Width = 22,
+                Height = 22,
+                Margin = new Thickness(2),
+                CornerRadius = new CornerRadius(4),
+                Background = new SolidColorBrush(Parse(theme.ContentBg)),
+                BorderThickness = new Thickness(selected ? 2 : 1),
+                BorderBrush = new SolidColorBrush(
+                    Parse(selected ? theme.Accent : theme.Border)),
+                Cursor = Cursors.Hand,
+                ToolTip = colour.ToString(),
+            };
+
+            var chosen = colour;
+
+            swatch.MouseLeftButtonUp += (_, e) =>
+            {
+                e.Handled = true;
+                ApplyColour(chosen);
+                close();
+            };
+
+            row.Children.Add(swatch);
+        }
+
+        return new System.Windows.Controls.MenuItem
+        {
+            Header = row,
+            StaysOpenOnClick = true,
+        };
+    }
+
+    /// <summary>
+    /// Opacity as a slider rather than five fixed steps.
+    /// </summary>
+    /// <remarks>
+    /// The floor is 30, ABOVE StateValidator.MinOpacity's 0.20, for the same
+    /// reason that floor exists: below roughly 20% a note is invisible and
+    /// cannot be found with the mouse to be fixed, so a slider that reached
+    /// zero would let the user build a state they cannot get out of.
+    ///
+    /// Applied live on ValueChanged, because the whole point of a slider is
+    /// seeing the result while you drag. Window.Opacity is cheap to set;
+    /// StateChanged goes to the index each time, which is one small JSON write
+    /// per drag notch and has not been worth debouncing.
+    /// </remarks>
+    private System.Windows.Controls.MenuItem OpacitySliderItem()
+    {
+        var readout = new System.Windows.Controls.TextBlock
+        {
+            Width = 34,
+            VerticalAlignment = VerticalAlignment.Center,
+            Text = $"{_state.Opacity * 100:0}%",
+        };
+
+        var slider = new System.Windows.Controls.Slider
+        {
+            Minimum = 30,
+            Maximum = 100,
+            Value = Math.Clamp(_state.Opacity * 100, 30, 100),
+            Width = 140,
+            TickFrequency = 5,
+            IsSnapToTickEnabled = true,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        slider.ValueChanged += (_, e) =>
+        {
+            readout.Text = $"{e.NewValue:0}%";
+            ApplyOpacity(e.NewValue / 100.0);
+        };
+
+        var row = new System.Windows.Controls.StackPanel
+        {
+            Orientation = System.Windows.Controls.Orientation.Horizontal,
+            Margin = new Thickness(6, 2, 6, 2),
+        };
+
+        row.Children.Add(slider);
+        row.Children.Add(readout);
+
+        return new System.Windows.Controls.MenuItem
+        {
+            Header = row,
+            StaysOpenOnClick = true,
+        };
     }
 
     private void ApplyColour(NoteColor colour)
@@ -467,6 +581,22 @@ public sealed partial class NoteWindow : Window, INoteWindow
         Root.BorderBrush = new SolidColorBrush(Parse(theme.Border));
         Header.Background = new SolidColorBrush(Parse(theme.ChromeBg));
         TitleText.Foreground = new SolidColorBrush(Parse(theme.ChromeFg));
+
+        // The header glyphs are styled in App.xaml and reach these two through
+        // DynamicResource, because a Style in application scope cannot see a
+        // per-note theme any other way. Without them the buttons fell back to
+        // Button's default near-black and were invisible on every dark note --
+        // the first thing a human noticed about this app.
+        //
+        // ChromeFg for the glyphs, and ChromeFg at low alpha for the hover
+        // wash. Deriving the wash from the foreground rather than picking
+        // black-or-white by mode is what makes it correct for Charcoal/Light,
+        // whose chrome is dark even though the mode says light.
+        var glyph = Parse(theme.ChromeFg);
+
+        Resources["HeaderGlyphFg"] = new SolidColorBrush(glyph);
+        Resources["HeaderGlyphHover"] = new SolidColorBrush(
+            Color.FromArgb(0x2A, glyph.R, glyph.G, glyph.B));
         Editor.Background = new SolidColorBrush(Parse(theme.ContentBg));
         Editor.Foreground = new SolidColorBrush(Parse(theme.ContentFg));
         Editor.CaretBrush = new SolidColorBrush(Parse(theme.Accent));

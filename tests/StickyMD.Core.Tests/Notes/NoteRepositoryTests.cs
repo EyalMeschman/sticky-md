@@ -1,3 +1,4 @@
+using System.Globalization;
 using Shouldly;
 using StickyMD.Core.Notes;
 using StickyMD.Core.Tests.TestSupport;
@@ -13,6 +14,37 @@ public class NoteRepositoryTests
 
     private static IClock On(int y, int m, int d)
         => new FixedClock(new DateTime(y, m, d, 12, 0, 0, DateTimeKind.Utc));
+
+    [Fact]
+    public void The_new_note_filename_date_does_not_follow_the_machine_calendar()
+    {
+        // Two things at once. "yyyy" resolves against the CURRENT CULTURE'S
+        // calendar, so under ar-SA (Umm al-Qura) an unpinned format names
+        // today's note 1448-xx-xx and it sorts nowhere near its neighbours --
+        // the filename convention is user-visible and on-disk, so it must not
+        // move with the machine's locale.
+        //
+        // This test also cannot RUN under <InvariantGlobalization>true</...>:
+        // constructing a real culture throws CultureNotFoundException there.
+        // That is deliberate. Invariant mode was set solution-wide once and it
+        // crashed every WPF TextBox from inside a layout pass; if anyone puts
+        // it back, this fails immediately instead of the app dying on the
+        // first note it opens.
+        using var dir = new TempDir();
+        var repo = new NoteRepository(Path.Combine(dir.Path, "notes"), On(2026, 8, 22));
+
+        var original = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = new CultureInfo("ar-SA");
+
+        try
+        {
+            Path.GetFileName(repo.CreateNew()).ShouldBe("2026-08-22-untitled.md");
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = original;
+        }
+    }
 
     [Fact]
     public void EnsureRootExists_creates_the_directory()
