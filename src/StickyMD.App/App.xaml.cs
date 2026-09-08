@@ -11,6 +11,7 @@ namespace StickyMD.App;
 
 public partial class App : Application
 {
+    private SingleInstance? _instance;
     private WindowManager? _manager;
     private NoteWatcher? _watcher;
     private SystemTheme? _theme;
@@ -29,6 +30,31 @@ public partial class App : Application
         // NoteWindow.OnTaskToggleRequested) reach it directly.
         DispatcherUnhandledException += OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandledException;
+
+        // Single instance BEFORE anything that reads or writes app state, and
+        // before the runtime check: two processes each hold their own copy of
+        // notes.json and write the whole snapshot on every save, so the loser
+        // must not get as far as loading one.
+        if (!SingleInstance.TryAcquire(SingleInstance.DefaultName, out _instance))
+        {
+            if (!SingleInstance.TrySend(SingleInstance.DefaultName, e.Args))
+            {
+                // Said out loud rather than swallowed: this launch is exiting
+                // regardless, so a failed handoff is a note the user asked for
+                // and will never see open.
+                DiagnosticsLog.Write(
+                    AppPaths.DiagnosticsFile,
+                    "Another StickyMD holds this session, but the handoff pipe did not answer. "
+                        + $"This launch exited without opening: {string.Join(", ", e.Args)}");
+            }
+
+            Shutdown();
+            return;
+        }
+
+        // Raised on a pipe thread, so Dispatch is not optional -- the same
+        // shape as every NoteWatcher handler below.
+        _instance!.Received += args => Dispatch(() => ApplyLaunchArgs(args));
 
         // Check the runtime FIRST. Without it a note window opens and simply
         // never paints, which looks like a bug in the window rather than a
@@ -111,6 +137,12 @@ public partial class App : Application
 
         _manager.RestoreOpenNotes();
 
+        // Through the SAME parser the pipe uses. "Open with StickyMD" must not
+        // behave one way with the app already up and another way with it down.
+        // Skipped when there is nothing to apply: a bare first launch has
+        // nothing to activate, it has just restored.
+        if (e.Args.Length > 0) ApplyLaunchArgs(e.Args);
+
         // First run, or every note closed: give the user something. A new note
         // opens directly in edit mode with focus, per the spec.
         if (_manager.OpenPaths.Count == 0) _manager.CreateAndOpenNote();
@@ -128,6 +160,38 @@ public partial class App : Application
         _watcher.Deleted += path => Dispatch(() => _manager?.OnDeleted(path));
         _watcher.Renamed += (from, to) => Dispatch(() => _manager?.OnRenamed(from, to));
         _watcher.Recovered += cause => Dispatch(() => _manager?.OnWatcherRecovered(cause));
+    }
+
+    /// <summary>
+    /// Spec 7's launch commands: nothing activates, <c>--new</c> creates,
+    /// anything else is a note to open. Used for this process's own command
+    /// line and for one handed down the pipe by a launch that lost.
+    /// </summary>
+    private void ApplyLaunchArgs(IReadOnlyList<string> args)
+    {
+        if (_manager is null) return;
+
+        if (args.Count == 0)
+        {
+            // Activate. Plan C's tray is what this becomes; for now showing
+            // the notes IS the app's only way of saying "I am already here",
+            // and with ShowInTaskbar false a silent no-op would be
+            // indistinguishable from a launch that failed.
+            _manager.ShowAll();
+            return;
+        }
+
+        foreach (var arg in args)
+        {
+            // Anything else beginning with "-" falls through ignored: that is
+            // --startup, plus whatever Plan C adds. Passing those to OpenNote
+            // would refuse each one into diagnostics.log as a missing file, and
+            // --startup needs no handling anyway -- RestoreOpenNotes is
+            // unconditionally ShowActivated=false, which is all it ever asked
+            // for. Unusable paths ARE OpenNote's to refuse and log.
+            if (arg.Equals("--new", StringComparison.OrdinalIgnoreCase)) _manager.CreateAndOpenNote();
+            else if (!arg.StartsWith('-')) _manager.OpenNote(arg);
+        }
     }
 
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)
@@ -282,6 +346,7 @@ public partial class App : Application
         _watcher?.Dispose();
         _theme?.Dispose();
         _manager?.Dispose();
+        _instance?.Dispose();
 
         base.OnExit(e);
     }

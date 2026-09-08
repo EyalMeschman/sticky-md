@@ -119,7 +119,7 @@ StickyMD.Core                    StickyMD.App (WPF)
 | `WindowManager`         | Owns live `NoteWindow`s; open/hide/show/dispose                      | Core + WPF            |
 | `MonitorEnumerator`     | Win32 monitor discovery → `MonitorInfo[]`                            | Win32                 |
 | `RecycleBinService`     | Delete a file to the Recycle Bin                                     | Win32 shell           |
-| `SingleInstanceService` | Per-user mutex + command pipe                                        | Win32 / .NET IPC      |
+| `SingleInstance`        | Per-user lock file + command pipe                                    | .NET IO / IPC         |
 
 `MonitorInfo { Bounds, WorkArea, Dpi, IsPrimary, DeviceName }` is plain data. **Monitor
 discovery lives in App; placement math lives in Core** — `WindowPlacement.Clamp(savedRect,
@@ -304,9 +304,18 @@ the end-to-end external-edit latency inside the ~200ms success criterion.
 `WindowStyle=None`, **`AllowsTransparency=True`** (mandatory — see §6.2), `ShowInTaskbar=False`,
 `WindowChrome` with `CaptionHeight=0` and `ResizeBorderThickness=6`.
 
-A thin header bar shows the derived title, revealing on hover: color dot, pin toggle, pencil
-(edit), `⋯`, and `✕`. The body is a `Grid` layering the `WebView2CompositionControl` and a
-`TextBox`; exactly one is visible at a time.
+A thin header bar shows the derived title, with a color dot, pin toggle, pencil (edit), `⋯`
+and `✕`. The body is a `Grid` layering the `WebView2CompositionControl` and a `TextBox`;
+exactly one is visible at a time.
+
+> **Revised 2026-09-05, after a screenshot of a running note was compared against this
+> paragraph.** The glyphs were originally "revealing on hover", implemented as `Opacity="0"` at
+> rest. That shipped and was wrong in the same way for the same reason as the `isOpen` and title
+> rules: on a dark note there was nothing whatsoever to suggest the header had controls, and the
+> first person to run the app could not find them. They now rest at `0.45` and go to `1.0` on
+> hover — present enough to be discoverable, quiet enough not to compete with the text. The two
+> halves of that number live in `NoteWindow.xaml`'s `HeaderButtons` and
+> `NoteWindow.RestingGlyphOpacity` and must agree.
 
 **`WindowChrome` is mandatory, not cosmetic.** `AllowsTransparency=True` removes WPF's resize
 frame entirely; without `WindowChrome` a note cannot be resized at all.
@@ -540,7 +549,21 @@ logon sequence for focus.
 
 ### Single instance
 
-Per-user named mutex. A second launch sends a command over a named pipe scoped with
+> **Revised 2026-09-04, when the service was built.** "Per-user named mutex" was
+> not implementable as written. A named mutex is per-user only in the `Global\`
+> namespace, and creating an object there needs `SeCreateGlobalPrivilege`, which
+> a standard non-elevated user does not have. The `Local\` namespace works
+> without it but is scoped per LOGON SESSION, not per user — and one user gets a
+> second session merely by remoting into a machine they are already logged into
+> at the console, which would put two processes on one `notes.json`. That is the
+> exact failure this section exists to prevent, so the mechanism gave way and
+> the requirement did not: the guard is a lock file held with `FileShare.None`
+> in `%LOCALAPPDATA%\StickyMD`, which is per-user by construction, needs no
+> privilege, and is released by the kernel however the process dies. The pipe is
+> unchanged, `PipeOptions.CurrentUserOnly` included, and is keyed on the user's
+> SID for the same reason. `SingleInstance` in `StickyMD.App.Services`.
+
+Per-user guard. A second launch sends a command over a named pipe scoped with
 `PipeOptions.CurrentUserOnly`, then exits.
 
 ```
