@@ -3,8 +3,9 @@
 **Read this first.** It is the orientation document for anyone picking this
 project up, including a fresh assistant session with no prior context.
 
-Last updated: 2026-09-04, after Plan B's whole-branch review and its single
-fix wave.
+Last updated: 2026-09-04, after the single-instance service was pulled forward
+out of Plan C and the scriptable third of the smoke checklist was automated
+and run green.
 
 ---
 
@@ -33,7 +34,7 @@ Two projects, three phases of work.
 | ----- | -------------------------------------------------------- | --------------------------------- |
 | **A** | `StickyMD.Core` — the platform-free core                 | **Complete**                      |
 | **B** | `StickyMD.App` — the WPF shell                           | **Complete — unverified by hand** |
-| **C** | Shell services — tray, hotkeys, startup, single-instance | Not started — next                |
+| **C** | Shell services — tray, hotkeys, startup, Settings        | Single-instance done; rest not started |
 
 `StickyMD.Core` targets plain **`net10.0`**, deliberately _not_
 `net10.0-windows`. That makes the spec's "zero WPF/Win32 in Core" boundary a
@@ -49,7 +50,8 @@ Plan is `docs/plans/2026-09-02-stickymd-plan-b-wpf-shell.md`. **All 14 tasks
 are implemented and tested**, the whole-branch review has run, and its single
 fix wave is applied. What is left before Plan C is the checklist, by hand.
 
-- **498 tests pass, 0 failed, 0 build warnings** (391 Core + 107 App).
+- **504 tests pass, 0 failed, 0 build warnings** (393 Core + 111 App). The
+  four added since the review are `SingleInstanceTests`.
 - **Both of Plan A's open findings are resolved** — see Resolved findings
   below.
 - **Nothing in Plan B has ever been run by a human.** Task 14 wrote the manual
@@ -87,7 +89,7 @@ fix wave is applied. What is left before Plan C is the checklist, by hand.
 
 **Complete at the time: 252 Core tests, 16 commits, zero build warnings.**
 Those 252 are a historical snapshot of Plan A alone and a subset of today's
-391 Core tests (498 total, Core + App — Plan B added both App tests and more
+393 Core tests (504 total, Core + App — Plan B added both App tests and more
 Core tests). Running `dotnet test` today returns the current total, not 252;
 that number is not a command to reproduce.
 
@@ -201,13 +203,6 @@ Every correction is recorded in `LastLoadIssues` and written to
   would be what Plan C's tray has to undo, since with a tray StickyMD must
   keep running with zero notes open so New Note stays reachable. Plan C's
   tray removes the hazard.
-- **No single-instance guard.** Two StickyMD processes share one WebView2
-  user-data folder and one `notes.json`, and neither knows about the other:
-  whichever writes the index last wins, so one instance can silently undo the
-  other's geometry and `isOpen` state. `CoreWebView2Environment.CreateAsync`
-  against a user-data folder already held by another process is also a
-  documented failure mode. Plan C owns the fix (the single-instance pipe);
-  until then, do not run two copies.
 - **`.stickymd-tmp` files are written INTO the notes root.**
   `NoteFile.AtomicWriteBytes` writes `note.md.stickymd-tmp` beside the note and
   then `File.Replace`s it, which sits awkwardly beside the "nothing app-owned
@@ -227,21 +222,21 @@ Every correction is recorded in `LastLoadIssues` and written to
   deliberately: the defect is a DIP leaking into a physical-pixel design, and
   converting one number without the other only moves it. There is a comment at
   each end.
-- **A window displaced by a rename collision keeps saving to a path it no
-  longer owns, and cannot be closed.** When a rename lands on a path that
-  already has a note open, `WindowManager.Rekey` detaches the displaced window,
-  drops it from `_windows` and shows it the "file is gone" bar so its text
-  stays visible. What it cannot do is stop it saving: the window keeps its
-  `SaveCoordinator` and its autosave timer, so an already-armed 500ms tick — or
-  an `Editor.LostFocus` — writes the displaced text over the file that was just
-  renamed into place, **with no user action at all**. Detaching is not
-  optional (its `NotePath` is now the survivor's map key, so a live
-  `CloseRequested` would close the wrong window), which also means its `✕`,
-  `⋯ → Delete` and the bar's Close are all inert, and being out of `_windows`
-  it never gets `SaveNow`/`Dispose` at exit. This is the honest floor of a
-  detect-and-notify fix: **`INoteWindow` has no stop-saving verb, and Plan C
-  must add one** as part of answering "one file, two owners". Low probability,
-  real text loss.
+- **A window displaced by a rename collision cannot be closed.** Its
+  automatic saves are now stopped: `INoteWindow.StopAutomaticSaves()` exists,
+  `WindowManager.Rekey` calls it on the displaced window before showing the
+  bar, and `NoteWindow.FlushAsync` refuses and logs. The text-loss half of this
+  is **fixed** — an armed autosave tick used to land after the rename and write
+  the displaced buffer over the file just renamed into place, with no user
+  action at all. `⋯ → Delete` on the survivor's path, an explicit Recreate, and
+  the shutdown flush are unaffected; Recreate deliberately clears the flag,
+  because a click that says what it will do is a choice rather than a race.
+
+  What remains is a UX wart, not data loss: the displaced window is out of
+  `_windows`, so its `✕`, `⋯ → Delete` and the bar's Close are all inert, and
+  it never gets `SaveNow`/`Dispose` at exit. Closing it needs a second owner
+  concept that Plan C's tray is the natural home for.
+
 - **`InvariantGlobalization` must stay unset.** It was set solution-wide in
   `Directory.Build.props` and made the app crash on the first note it ever
   opened: WPF's caret setup calls `InputLanguageSource.CurrentInputLanguage`,
@@ -266,6 +261,73 @@ Every correction is recorded in `LastLoadIssues` and written to
 
 ---
 
+## Starting Plan C — read this first
+
+Single-instance is done. The rest of Plan C is unstarted, and these are the
+things that are in nobody's head and would otherwise be discovered the hard way.
+
+### The tray needs a dependency decision made deliberately
+
+Spec 7 names **`H.NotifyIcon.Wpf`** — a NuGet package, chosen so the tray menu
+is a real WPF menu and the app takes no WinForms dependency. The alternative is
+`System.Windows.Forms.NotifyIcon`, which needs no package at all because WinForms
+ships in the same `Microsoft.WindowsDesktop.App` runtime the app already uses;
+its cost is `<UseWindowsForms>true</UseWindowsForms>`, a native-looking menu
+rather than one themed like the `⋯` menu, and a likely implicit-using clash on
+`MessageBox` and `Application` that `TreatWarningsAsErrors` turns into a build
+failure (fix with `<Using Remove="System.Windows.Forms" />`).
+
+Both are defensible. Decide it on purpose and, if it goes against the spec,
+date a revision note there — this repo's rule when the spec and the code
+disagree.
+
+The spec's tray menu is binding and is more than the obvious four items:
+
+```
+New Note
+Recent Notes ▸   (10 by lastOpenedUtc, OPEN ONES CHECK-MARKED)
+Open Note…
+Show All
+Hide All
+─────────
+Settings
+Launch at Startup ☑
+─────────
+Exit
+```
+
+Left-click toggles Show All / Hide All. **`Open Note…` is the answer to Plan B's
+"a note with no index entry is unreachable"** — it is not decoration.
+
+### Landing the tray breaks the verification harness
+
+`scripts/verify-smoke-ui.ps1` drives the temporary `Ctrl+Shift+Alt+Q` key in two
+blocks — `exit-key` and `save-snapshot` (`Stop-AppViaExitKey`). Contract 4 below
+says those temporary keys must be **removed** once the tray lands, so whoever
+does that has to repoint both blocks at the tray's Exit item in the same change,
+or the harness starts failing for a reason that has nothing to do with the app.
+The tray menu is reachable by UI Automation the same way the `⋯` menu is.
+
+The same applies to `NoteWindow.NewNoteRequested` and
+`WindowManager.CreateAndOpenNote`'s temporary caller.
+
+### Suggested order
+
+1. **Tray**, because it unblocks everything else: it retires the temporary keys,
+   removes the "closing the last note strands the process" hazard, and gives the
+   displaced-window wart somewhere to be closed from.
+2. **Hotkeys** — hidden `HwndSource` + `RegisterHotKey`, defaults `Ctrl+Alt+N`
+   and `Ctrl+Alt+S`. Registration failure must name the conflicting combination
+   in a tray balloon and keep running, per spec.
+3. **Startup registry entry** — `HKCU\...\Run`, value `StickyMD` →
+   `"<exe>" --startup`. `--startup` already parses and is deliberately a no-op;
+   nothing writes the entry yet.
+4. **Settings window** last, because three places currently say "until Plan C"
+   and fall back to a dialog-then-exit or a per-note-only opt-in, and Settings
+   is what replaces them.
+
+---
+
 ## What is left
 
 **Plan C — shell services.** Not yet written. Scope:
@@ -274,33 +336,161 @@ Every correction is recorded in `LastLoadIssues` and written to
 - Global hotkeys (New Note, Show/Hide All), replacing the temporary
   `Ctrl+Shift+Alt+N`/`Q` keys Task 14 added
 - Startup registry entry
-- Single-instance pipe
 - A Settings window (`allowRemoteImages`, default colour/opacity/size, theme,
   hotkeys, notes root)
 
-### Next, decided 2026-09-04: single-instance FIRST, then the checklist
+### Done 2026-09-04: single instance, pulled forward out of Plan C
 
-Do the single-instance service on its own, pulled forward out of Plan C, before
-anything else — including before running the smoke checklist.
+Built first, before the checklist, because **the checklist could not be trusted
+without it.** Every geometry, colour, opacity and three-states item verifies
+itself by reading `notes.json`, and a second instance can overwrite that file
+between two of them. It had already happened once: four instances were running
+during the first manual session and `2026-09-04-untitled.md` lost its index
+entry entirely, which in Plan B makes a note unreachable because there is no
+Open command. Against a file with two writers a real failure and a race look
+identical, so the list would have had to be run twice.
 
-The reason is not that it is the biggest feature; it is that **the checklist
-cannot be trusted without it.** Every geometry, colour, opacity and
-three-states item verifies itself by reading `notes.json`, and today a second
-instance can overwrite that file between two of them. It has already happened
-once: four instances were running during the first manual session, and
-`2026-09-04-untitled.md` lost its index entry entirely, which in Plan B makes a
-note unreachable because there is no Open command. Running 85 manual items
-against a file with two writers means a real failure and a race look identical,
-so the list would have to be run twice.
+`SingleInstance` (`src/StickyMD.App/Services/SingleInstance.cs`) is a per-user
+lock file plus a named pipe, taken in `App.OnStartup` before the
+`WebViewEnvironment.DetectRuntimeVersion()` check and before anything reads or
+writes app state. A losing launch hands its command line down the pipe and
+exits. What is worth knowing about it:
 
-Scope: a named mutex so a second launch hands off rather than starting, and a
-pipe so it forwards "open this note" to the live instance. `App.OnStartup` is
-where it lands, before the `WebViewEnvironment.DetectRuntimeVersion()` check.
-`WindowManager.OpenNote` is already idempotent per path and already focuses an
-existing window, so the receiving side is a one-line call.
+- **The guard is a LOCK FILE, and the spec's "per-user named mutex" now carries
+  a dated revision note saying why.** A named mutex is per-user only in the
+  `Global\` namespace, which needs `SeCreateGlobalPrivilege` and so is closed to
+  a standard non-elevated user; a `Local\` one is per LOGON SESSION, and one
+  user gets a second session just by remoting into a machine they are already
+  logged into at the console — two processes, one `notes.json`, which is the
+  failure the whole service exists to prevent. `%LOCALAPPDATA%` is per-user by
+  construction. The file is opened `FileShare.None` with
+  `FileOptions.DeleteOnClose`, so a crash, a Task Manager kill and a clean exit
+  all release it identically and there is no stale-lock case to reason about.
+- **Only `IOException` means "somebody else is running".** An
+  `UnauthorizedAccessException` means the guard could not be TAKEN, which is a
+  different thing: that path logs and starts anyway, because refusing would turn
+  an unwritable `%LOCALAPPDATA%` into an app that never starts again.
+- **`PipeOptions.CurrentUserOnly` is on both ends** per spec 7, and the pipe name
+  carries the user's SID — the pipe namespace is machine-wide and the server
+  allows one instance, so without it two logged-on users could not both listen.
+- **`App.ApplyLaunchArgs` is spec 7's command protocol**, and this process's own
+  command line goes through it too. A launch must not behave one way with the
+  app already up and another way with it down. No args activates (`ShowAll`),
+  `--new` creates, anything not starting with `-` is a path for
+  `WindowManager.OpenNote`, which is already idempotent per path and already
+  focuses an existing window. Unrecognised flags are ignored rather than passed
+  to `OpenNote`, which would refuse each one into `diagnostics.log`;
+  `--startup` needs no handling because `RestoreOpenNotes` is unconditionally
+  `ShowActivated=false` already.
+- **Known limitation, and the deliberate cost of choosing per-user over
+  per-session:** a second logon session of the same user hands its note to the
+  instance running on the OTHER session's desktop, where the user cannot see it.
+  Nothing is lost, and the alternative was two writers on `notes.json`. Plan C's
+  tray does not change this; a fix would mean comparing session ids and telling
+  the user, and it is not worth the plumbing until someone hits it.
 
-Then run `docs/checklists/2026-09-02-plan-b-smoke.md` — 85 items, none run yet
-— and only then the rest of Plan C.
+### The checklist is part-run: 31 of 92, all green
+
+`scripts/verify-smoke.ps1` runs every item whose verdict lives on disk rather
+than on screen, and **31 of the 92 now pass mechanically**: the whole Single
+instance section, Three states bar the click-driven ones, the
+config-corruption and file-safety half of Degradation, and the three
+Verify-at-the-end commands. It takes two minutes and can be re-run after any
+change, which is what the checklist header asks for and nobody would do by hand.
+
+It backs up `%LOCALAPPDATA%\StickyMD`, points the app at a scratch notes root,
+restores afterwards and **asserts the restore worked** — that last check exists
+because the first version did not do it: `Remove-Item` cannot clear the
+WebView2 folder while the renderer's handles are still closing, so `Copy-Item`
+nested the whole backup inside the folder it was meant to replace and put the
+user's state one level too deep. Nothing was lost, and it looked exactly like
+something had been.
+
+Two limits are structural, not laziness:
+
+- **`Ctrl+Shift+Alt+Q` cannot be scripted from here.** It reads
+  `Keyboard.Modifiers` off a focused window's `PreviewKeyDown`, and a script
+  without foreground rights cannot deliver a keystroke to it. The script drives
+  the same shutdown code through `WM_QUERYENDSESSION` instead — a real product
+  path, the one the log-off item is about — and asserts what that path actually
+  promises: `notes.json` rewritten, `isOpen` intact. It does **not** prove the
+  key works.
+- **The settings-fallback item touches the real notes root**, because forcing
+  the app onto its DEFAULT root is the item. The script names the note it
+  leaves rather than deleting it.
+
+### The interaction items are automated too
+
+`scripts/verify-smoke-ui.ps1` drives the running app: real keystrokes, real
+mouse, UI Automation for menus, bars and dialogs, and screenshot comparison for
+anything whose answer is on screen. **54 checks.** With the 31 in
+`verify-smoke.ps1` that is **85 automated checks, covering roughly 60 of the
+checklist's 92 items.**
+
+It covers the Editing and saving section, the header chrome, the whole `⋯` menu
+through Rename and Delete-to-the-Recycle-Bin, the close glyph, the temporary
+exit key, checkbox clicks, images (relative, `data:`, absolute, outside-root,
+remote-blocked), links (`.md`, `#anchor`, `javascript:`), the WebView hardening
+(no context menu, no devtools, no zoom), external edits (reload, delete and
+Recreate, rename re-keying the index), and save failures (the couldn't-save
+bar, Retry, and the recovery snapshot).
+
+`-Only <substring>` runs a single block, and it matters: without it, debugging
+one check costs twenty app launches, and that load is itself a source of the
+timing flakiness you then go and chase.
+
+Six mechanisms each cost a confident wrong answer before they were understood.
+Every one is the same mistake — asserting on a state nobody established:
+
+1. **`SetForegroundWindow` silently does nothing** for a process that is not
+   already foreground. `AttachThreadInput` to the foreground window's thread
+   lifts it. Without that, `Ctrl+Shift+Alt+Q` was written off as unscriptable
+   twice; it is now a passing check.
+2. **The WebView2 is a child HWND in another process.** While it holds keyboard
+   focus every key goes to the browser and the window-level `PreviewKeyDown`
+   never sees it. `SetFocus` on the WPF window fixes it. Clicking the header
+   also fixes it and must NOT be used: that click fires `DragMove`, whose
+   nested modal message loop eats whatever is typed next.
+3. **A fixed sleep after `Ctrl+E` is a race.** `Enter-EditMode` polls UIA until
+   the editor really holds keyboard focus, and retries.
+4. **`InvokePattern.Invoke()` waits for the click handler to return**, so
+   invoking `⋯ → Delete` deadlocks against the modal it just opened. Click
+   those by bounding rectangle.
+5. **A teleported cursor is not a hover.** WPF decides `IsMouseOver` from move
+   messages. Glide it: 41.9 at rest, 47.1 on the header, 52.1 on a glyph.
+6. **A screenshot tolerance has to be measured, not estimated.** One line of
+   body text changing is `diff=0.0034`, not the ~1% a first guess assumed, and
+   a threshold set from that guess reported a broken file watcher against a
+   watcher that worked perfectly. `Get-ShotDiff` returns the ratio and each
+   call site picks its own side of `$ShotSame`.
+
+**The harness now notices a human at the keyboard.** Every cursor move goes
+through one place, and a failure recorded while the pointer is somewhere the
+script did not put it is labelled as possibly-tainted rather than reported as a
+defect. This is not paranoia: a modal dialog answered by hand nearly became a
+"Delete does not ask first" data-loss report, and a note scrolled by hand nearly
+became "long notes open at the wrong scroll position". Both were false, both
+looked completely solid, and the app was correct in both cases.
+
+### What is genuinely left for a human
+
+Eight items, and only these:
+
+- **Mixed DPI.** Needs a display at a different scale. Already flagged
+  UNVERIFIED on this hardware.
+- **The WebView2-runtime-missing dialog.** Needs the runtime uninstalled.
+- **`App.DispatcherUnhandledException`.** Already deliberately unverified;
+  staging it means shipping a crash.
+- **No white flash on first paint**, and **content staying sharp during a
+  resize.** Sub-frame timing and a judgement call.
+- **A pinned note above a fullscreen application.**
+- **Unplugging or disabling DISPLAY2.**
+- **Recycle Bin on a network share or removable drive** — the known limitation,
+  and it needs hardware someone has to choose.
+
+Everything else on the 92 either passes mechanically now or is the same kind of
+work as what does: the remaining links-and-images items, the external-edit and
+save-failure bars, and geometry across monitors.
 
 ---
 

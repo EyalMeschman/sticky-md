@@ -15,13 +15,20 @@ dotnet build C:\Users\Eyal\dev\sticky-md\StickyMD.sln
 Start-Process C:\Users\Eyal\dev\sticky-md\src\StickyMD.App\bin\Debug\net10.0-windows10.0.17763.0\StickyMD.exe
 ```
 
-**One instance at a time, and this is not a style preference.** There is no
-single-instance guard until Plan C. Every process holds its own in-memory copy
-of `notes.json` and writes the _whole snapshot_ on every save, so two
-instances silently clobber each other's rows — a note can lose its index entry
-entirely and become unreachable, because Plan B has no Open command. If you
-are testing by hand, exit with `Ctrl+Shift+Alt+Q` (the temporary exit key)
-rather than killing the process, or that run's geometry is not saved.
+**A second launch does not start a second process any more.** `SingleInstance`
+(`src/StickyMD.App/Services/SingleInstance.cs`) holds
+`%LOCALAPPDATA%\StickyMD\StickyMD.lock` open with `FileShare.None` from
+`OnStartup`, and hands the losing launch's command line to the live instance
+over a named pipe. That matters because every process holds its own
+in-memory copy of `notes.json` and writes the _whole snapshot_ on every save,
+so two of them silently clobber each other's rows — a note can lose its index
+entry entirely and become unreachable, because Plan B has no Open command.
+
+The practical consequence for the dev loop: **`Start-Process StickyMD.exe`
+against a running instance activates it rather than launching**, so the
+`Stop-Process` line above is not optional. If you are testing by hand, exit with
+`Ctrl+Shift+Alt+Q` (the temporary exit key) rather than killing the process, or
+that run's geometry is not saved.
 
 A running instance holds `StickyMD.exe` and makes `dotnet build` fail at the
 copy step with MSB3027 naming the PIDs. That error means "the app is running",

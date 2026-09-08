@@ -8,6 +8,40 @@ and hotkeys outside unit testing and covers them here instead.
 2560×1440 displays both at 100%, DISPLAY2 at x=2560, WebView2 runtime
 151.0.4129.101, .NET SDK 10.0.400.
 
+## Run the two scripts first
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scriptserify-smoke.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scriptserify-smoke-ui.ps1
+```
+
+`verify-smoke-ui.ps1` drives the app with real keys and a real mouse and covers
+the Editing and saving section, plus the header's resting glyphs, hover
+brighten, and drag behaviour. It takes genuine foreground focus, so it steals
+your keyboard while it runs.
+
+31 of these items verify themselves from disk rather than on screen, and
+`scripts/verify-smoke.ps1` does those: the whole **Single instance** section,
+all of **Three states** except the ones needing a click, the config-corruption
+and file-safety half of **Degradation**, and the three **Verify at the end**
+commands. It backs up `%LOCALAPPDATA%\StickyMD` and restores it afterwards,
+and points the app at a scratch notes root so the real folder is untouched.
+
+It takes about two minutes, launches the app around fifteen times, and one
+check deliberately raises a modal dialog. Its last line lists what it did
+**not** cover; that list is the rest of this document.
+
+Two things it cannot judge, by construction, and which stay here:
+
+- **`Ctrl+Shift+Alt+Q`.** The handler reads `Keyboard.Modifiers` off a focused
+  window's `PreviewKeyDown`, and a script has no foreground rights to give it.
+  The script exercises the same shutdown code through `SessionEnding` instead,
+  which is the logoff path, so the *key itself* is still unproven.
+- **One note in the real notes root.** The garbage-`settings.json` item forces
+  the app onto its DEFAULT root, which is the whole point of that item, so it
+  creates a note in `~\StickyMD Notes`. The script names the file rather than
+  deleting it; nothing here ever deletes from the real notes folder.
+
 **Temporary Plan B keys:** `Ctrl+Shift+Alt+Q` exits, `Ctrl+Shift+Alt+N` makes
 a new note. Both are removed in Plan C. **Both live on a note window — do not
 close the last open note while working through this list.** With zero notes
@@ -25,7 +59,10 @@ Plan C's tray removes this hazard entirely.
 - [ ] A pinned note stays above a **fullscreen** application.
 - [ ] Corners are rounded.
 - [ ] Dragging the header moves the note; dragging any edge or corner resizes it.
-- [ ] Hovering the header reveals the glyphs; leaving hides them.
+- [ ] The header glyphs are **faintly visible at rest** and brighten on hover.
+      Not hidden-then-revealed: that was the original design and it made them
+      undiscoverable on a dark note. See the 2026-09-05 revision note in the
+      spec.
 - [ ] There is no white flash on first paint.
 - [ ] With notes open and Windows set to "System" theme (the default), switch
       Windows between light and dark in Settings: every open note's chrome
@@ -137,11 +174,45 @@ The headline hazard. Get any of these wrong and the desktop empties.
       and `.ShowAll_brings_hidden_windows_back`
       (`tests/StickyMD.App.Tests/Services/WindowManagerTests.cs`). Plan C must
       run this by hand once Hide All and Show All are reachable from the tray.
+      **Show All alone is now reachable**: a bare relaunch of `StickyMD.exe`
+      activates the running instance, which is Show All — see Single instance
+      below.
 - [ ] Log off and back on with notes open, then **launch StickyMD by hand** —
       there is no startup registry entry until Plan C, so it is not already
       running after logon. **All of the notes that were open come back.**
 - [ ] Open the same note twice — by path and via a relative `.md` link. **One window, focused.**
 - [ ] Add a `.md` to the notes root from Explorer. **No window appears.**
+
+## Single instance
+
+Pulled forward out of Plan C, and run BEFORE the rest of this list rather than
+after it: every geometry, colour, opacity and three-states item above verifies
+itself by reading `notes.json`, and a second process writes the whole snapshot
+over the first one's. Four instances were running during the first manual
+session and `2026-09-04-untitled.md` lost its index entry entirely, which in
+Plan B makes a note unreachable — there is no Open command. With two writers a
+real failure and a race look identical.
+
+- [ ] With the app running, launch `StickyMD.exe` again. **Task Manager shows
+      exactly one `StickyMD.exe`**, no new note is created, and the notes that
+      were open come to the front.
+- [ ] With the app running, `Start-Process StickyMD.exe -ArgumentList '<path to
+      an OPEN note>'`. **One window, focused** — not a second window on the
+      same file.
+- [ ] Same again with a note that is **not** open: it opens in the running
+      instance, and Task Manager still shows one process.
+- [ ] `Start-Process StickyMD.exe -ArgumentList '--new'` with the app running:
+      a new note appears in the running instance, in edit mode.
+- [ ] Exit with `Ctrl+Shift+Alt+Q`, then launch again. **It starts.** A guard
+      that outlives the process it guards locks the user out of their own app.
+- [ ] End `StickyMD.exe` from Task Manager, then launch again. **It starts**,
+      and `%LOCALAPPDATA%\StickyMD\StickyMD.lock` is gone. This is the crash
+      path: the lock is `FileOptions.DeleteOnClose`, so the kernel releases it
+      whether the process exited or was killed.
+- [ ] With the app **not** running, `Start-Process StickyMD.exe -ArgumentList
+      '<path to a note that is not in the restore set>'`: it starts, restores
+      the open notes **and** opens that one. A launch must not behave one way
+      with the app up and another way with it down.
 
 ## Degradation
 
