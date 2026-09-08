@@ -659,6 +659,15 @@ public sealed class WindowManager : IDisposable
         if (_windows.Remove(newCanonical, out var displaced))
         {
             Detach(displaced);
+
+            // BEFORE the bar, and not optional. Detaching removes this window
+            // from the map but leaves it running, and its autosave timer may
+            // ALREADY be armed from a keystroke a moment ago. Without this the
+            // tick lands after the rename and writes the displaced text over
+            // the file just renamed into place -- no click, no warning, and
+            // the renamed-in content is gone.
+            displaced.StopAutomaticSaves();
+
             displaced.NotifyFileDeleted();
 
             DiagnosticsLog.Write(

@@ -49,6 +49,21 @@ public interface INoteWindow : IDisposable
     void NotifyRenamed(string canonicalPath);
     void SaveNow();
 
+    /// <summary>
+    /// Give up this path: stop every save that happens WITHOUT the user asking.
+    /// </summary>
+    /// <remarks>
+    /// For a window displaced by a rename collision, which is detached from
+    /// WindowManager's map but still alive and still holding its text. Its
+    /// autosave timer and its LostFocus handler do not know that, and an
+    /// already-armed tick writes the displaced buffer over the file that was
+    /// just renamed into place -- with no user action at all. The buffer is
+    /// deliberately NOT cleared: the text stays visible behind the
+    /// "file is gone" bar, and that bar's Recreate still writes it, because an
+    /// explicit click that says what it will do is a choice rather than a race.
+    /// </remarks>
+    void StopAutomaticSaves();
+
     /// <summary>A recovery snapshot survived to this startup.</summary>
     void ShowRecovered(RecoveryEnvelope envelope);
 
@@ -117,6 +132,13 @@ public sealed partial class NoteWindow : Window, INoteWindow
     /// state; only this gate makes writing impossible until a read succeeds.
     /// </remarks>
     private bool _loadFailed;
+
+    /// <summary>
+    /// This window was displaced by a rename and no longer owns
+    /// <see cref="NotePath"/>. Set by <see cref="StopAutomaticSaves"/>, and
+    /// cleared only by an explicit Recreate: the user re-taking the path.
+    /// </summary>
+    private bool _savingStopped;
 
     /// <summary>
     /// What the WebView shell was last BUILT with -- not what this window
@@ -1340,9 +1362,30 @@ public sealed partial class NoteWindow : Window, INoteWindow
         await RenderAsync().ConfigureAwait(true);
     }
 
+    public void StopAutomaticSaves()
+    {
+        _savingStopped = true;
+
+        // An armed tick is the whole hazard: stopping the timer is not tidiness.
+        _autosave.Stop();
+    }
+
     private async Task FlushAsync()
     {
         _autosave.Stop();
+
+        if (_savingStopped)
+        {
+            // This window no longer owns NotePath: a rename landed on it and
+            // another window has the file now. Writing here would replace the
+            // renamed-in file with this one's text. Recorded, never silent.
+            Core.Diagnostics.DiagnosticsLog.Write(
+                AppPaths.DiagnosticsFile,
+                $"{NotePath}: a save was refused -- this note was displaced by a rename "
+                    + "and no longer owns the path. Its text is intact behind the bar.");
+
+            return;
+        }
 
         if (_loadFailed)
         {
@@ -1489,6 +1532,12 @@ public sealed partial class NoteWindow : Window, INoteWindow
             PrimaryAction: "Recreate",
             OnPrimary: () =>
             {
+                // An explicit click re-takes this path. A displaced window is
+                // barred from saving automatically, but Recreate is the user
+                // saying "put my text here", and overwriting a file renamed
+                // into place is accepted when it is asked for out loud.
+                _savingStopped = false;
+
                 // The buffer is still here, so recreating is a save. That is
                 // the whole reason the buffer is never cleared on failure.
                 _saves.MarkDirty(_buffer);
@@ -1510,10 +1559,13 @@ public sealed partial class NoteWindow : Window, INoteWindow
 
     public void SaveNow()
     {
-        // The same gate FlushAsync applies -- see _loadFailed. Nothing should
-        // be able to mark this note dirty while the flag is set, but the
-        // shutdown flush must not be the one write path that assumes so.
-        if (_loadFailed) return;
+        // The same gates FlushAsync applies -- see _loadFailed and
+        // _savingStopped. Nothing should be able to mark this note dirty while
+        // either flag is set, but the shutdown flush must not be the one write
+        // path that assumes so. A displaced window is out of WindowManager's
+        // map today and so never reaches here; Plan C wants to make such a
+        // window closable, which would put it back in reach.
+        if (_loadFailed || _savingStopped) return;
 
         // Synchronous on purpose: called during shutdown and window disposal,
         // where an awaited continuation may never be pumped because the

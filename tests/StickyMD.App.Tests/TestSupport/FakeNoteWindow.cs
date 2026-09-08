@@ -86,6 +86,10 @@ public sealed class FakeNoteWindow(string notePath, NoteState state) : INoteWind
 
     public void SaveNow() => WasSaved = true;
 
+    public bool AutomaticSavesStopped { get; private set; }
+
+    public void StopAutomaticSaves() => AutomaticSavesStopped = true;
+
     public void Dispose()
     {
         IsDisposed = true;

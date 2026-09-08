@@ -640,6 +640,14 @@ public class WindowManagerTests : IDisposable
         displaced.IsDisposed.ShouldBeFalse("Dispose would flush it over the renamed file");
 
         _factory.Created.ShouldAllBe(w => !w.WasSaved, "neither buffer may be written");
+
+        // Not writing DURING the rename was never the hard part. The displaced
+        // window stays alive with its own SaveCoordinator and autosave timer,
+        // and a tick armed by a keystroke a moment earlier fires afterwards --
+        // writing its text over the file just renamed into place, with no user
+        // action at all. Detaching cannot stop that; only this can.
+        displaced.AutomaticSavesStopped.ShouldBeTrue(
+            "a displaced window keeps autosaving to a path it no longer owns");
     }
 
     [Fact]
