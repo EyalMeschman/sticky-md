@@ -1,8 +1,9 @@
-# Plan B manual smoke checklist
+# Manual smoke checklist: the notes
 
-Run this at the end of Plan B and again after any change to window chrome,
-WebView2 hosting, or the save path. Spec §9 puts windows, WebView2, the tray,
-and hotkeys outside unit testing and covers them here instead.
+Run this after any change to window chrome, WebView2 hosting, or the save
+path. Spec §9 puts windows, WebView2, the tray, and hotkeys outside unit
+testing and covers them here instead. The tray, hotkeys, startup entry and
+Settings have their own list in `2026-09-08-plan-c-smoke.md`.
 
 **Environment this was written against:** Windows 11 10.0.26200, two
 2560×1440 displays both at 100%, DISPLAY2 at x=2560, WebView2 runtime
@@ -38,13 +39,8 @@ One thing it cannot judge, by construction, and which stays here:
   creates a note in `~\StickyMD Notes`. The script names the file rather than
   deleting it; nothing here ever deletes from the real notes folder.
 
-**Updated 2026-09-08, when Plan C's tray landed.** This list was written against
-the temporary `Ctrl+Shift+Alt+Q` and `Ctrl+Shift+Alt+N` keys, which are **gone**
-— they lived on a note window and existed only because Plan B had no tray. Every
-item below that said "exit with `Ctrl+Shift+Alt+Q`" now means **the tray menu's
-Exit**, and New Note is on the same menu. The hazard that came with them is gone
-with them: closing the last note no longer strands the process, because the tray
-is always there.
+Exit through **the tray menu's Exit**, never Task Manager, or that run's
+geometry is not saved. New Note is on the same menu.
 
 On Windows 11 the tray icon starts in the **hidden-icons overflow** behind the
 `^` chevron rather than on the taskbar. That is Windows, not StickyMD, and an
@@ -165,38 +161,27 @@ The headline hazard. Get any of these wrong and the desktop empties.
 - [ ] Open three notes. `⋯ → Delete` one. Restart. **Two come back, and the
       third is in the Recycle Bin.** Deletion is now the only way a note leaves
       the restore set, which is what makes the item above safe.
-- [ ] Hide All / Show All — **N/A until Plan C's tray.** There is no temporary
-      Hide key (adding one would strand the app: with every window hidden
-      there is no window left to press the exit key on, and no Show All until
-      the tray). Covered headlessly in the meantime by
-      `WindowManagerTests.HideAll_hides_every_window_and_leaves_isOpen_alone`
-      and `.ShowAll_brings_hidden_windows_back`
-      (`tests/StickyMD.App.Tests/Services/WindowManagerTests.cs`). Plan C must
-      run this by hand once Hide All and Show All are reachable from the tray.
-      **Show All alone is now reachable**: a bare relaunch of `StickyMD.exe`
-      activates the running instance, which is Show All — see Single instance
-      below.
-- [ ] Log off and back on with notes open, then **launch StickyMD by hand** —
-      there is no startup registry entry until Plan C, so it is not already
-      running after logon. **All of the notes that were open come back.**
+- [ ] Hide every note (tray left-click or the show/hide hotkey). Exit from the
+      tray menu. Restart. **All of them come back** — hidden is "off my
+      screen", and `isOpen` is untouched. The tray's own toggle items are in
+      the other checklist.
+- [ ] Log off and back on with notes open. If Launch at Startup is off, launch
+      StickyMD by hand. **All of the notes that were open come back.**
 - [ ] Open the same note twice — by path and via a relative `.md` link. **One window, focused.**
 - [ ] Add a `.md` to the notes root from Explorer. **No window appears.**
 
 ## Single instance
 
-Pulled forward out of Plan C, and run BEFORE the rest of this list rather than
-after it: every geometry, colour, opacity and three-states item above verifies
-itself by reading `notes.json`, and a second process writes the whole snapshot
-over the first one's. Four instances were running during the first manual
-session and `2026-09-04-untitled.md` lost its index entry entirely, which in
-Plan B makes a note unreachable — there is no Open command. With two writers a
-real failure and a race look identical.
+Run BEFORE the rest of this list rather than after it: every geometry, colour,
+opacity and three-states item above verifies itself by reading `notes.json`,
+and a second process writes the whole snapshot over the first one's. With two
+writers a real failure and a race look identical.
 
 - [ ] With the app running, launch `StickyMD.exe` again. **Task Manager shows
       exactly one `StickyMD.exe`**, no new note is created, and the notes that
       were open come to the front.
 - [ ] With the app running, `Start-Process StickyMD.exe -ArgumentList '<path to
-      an OPEN note>'`. **One window, focused** — not a second window on the
+an OPEN note>'`. **One window, focused** — not a second window on the
       same file.
 - [ ] Same again with a note that is **not** open: it opens in the running
       instance, and Task Manager still shows one process.
@@ -209,7 +194,7 @@ real failure and a race look identical.
       path: the lock is `FileOptions.DeleteOnClose`, so the kernel releases it
       whether the process exited or was killed.
 - [ ] With the app **not** running, `Start-Process StickyMD.exe -ArgumentList
-      '<path to a note that is not in the restore set>'`: it starts, restores
+'<path to a note that is not in the restore set>'`: it starts, restores
       the open notes **and** opens that one. A launch must not behave one way
       with the app up and another way with it down.
 
@@ -269,7 +254,7 @@ real failure and a race look identical.
 - [ ] Corrupt `notes.json` by hand: the app starts, the file is kept as `notes.json.corrupt-1`, **every `.md` is intact**, and `diagnostics.log` says only geometry was lost.
 - [ ] Put `{"color": 99}` in a `notes.json` entry: the note opens in the default colour and `diagnostics.log` names the correction.
 - [ ] Set `"opacity": 0.0`: the note opens at 20%, visible and clickable.
-- [ ] Point `settings.json`'s `notesRoot` at a nonexistent drive (e.g. `"Z:\\notes"`) and start the app: a warning dialog names the path, `diagnostics.log` records why, and **the app exits** rather than staying up with nothing to show.
+- [ ] Point `settings.json`'s `notesRoot` at a nonexistent drive (e.g. `"Z:\\notes"`) and start the app: a tray balloon names the path, Settings opens with a banner, `diagnostics.log` records why, and **the app stays up**. Pointing it at a writable folder and saving recovers without a restart. _(automated in `verify-smoke-ui.ps1`'s `settings-root-failure` block)_
 - [ ] Write random garbage into `settings.json`, then start the app: it is kept as `settings.json.corrupt-1`, defaults are used, and `diagnostics.log` says so.
 - [ ] Put `{"defaultOpacity": 5}` in an otherwise-valid `settings.json`, then start the app: `diagnostics.log` names the correction (clamped into `0.20`-`1.0`) and the note that opens uses the corrected default.
 - [ ] **Not testable on this machine:** the WebView2-runtime-missing dialog (`App.ShowRuntimeMissingDialog`). The runtime is installed here and uninstalling it to exercise this path is not a reasonable ask — recorded as a known gap, not an omission.
