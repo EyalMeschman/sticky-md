@@ -10,6 +10,16 @@ using StickyMD.Core.Theming;
 namespace StickyMD.App.Services;
 
 /// <summary>
+/// One row of the tray's Recent Notes submenu.
+/// </summary>
+/// <param name="IsOpen">
+/// A window exists for it right now, which is what the menu check mark means.
+/// NOT the index's <c>isOpen</c> -- that is true for every note the user has
+/// ever opened, so ticking it would tick the whole list.
+/// </param>
+public sealed record RecentNote(string Path, string Title, bool IsOpen);
+
+/// <summary>
 /// Owns every live note window and the index that outlives them.
 /// </summary>
 /// <remarks>
@@ -29,30 +39,30 @@ namespace StickyMD.App.Services;
 ///
 /// This class talks to INoteWindow, not to a WPF Window type, so all of the
 /// above is exercised headlessly by WindowManagerTests -- which is the point,
-/// because none of it can be tested through a real window. One temporary
-/// exception: <see cref="Instantiate"/> checks <c>window is NoteWindow</c> to
-/// wire the Plan-B-only New Note hotkey, since that event is not on
-/// INoteWindow. It goes away with Plan C's tray, and WindowManagerTests drives
-/// fakes, so that one branch is untested here.
+/// because none of it can be tested through a real window. Nothing here
+/// checks for the concrete <c>NoteWindow</c> type, so every branch is
+/// reachable through fakes.
 /// </remarks>
-public sealed class WindowManager : IDisposable
+public sealed class WindowManager(
+    NoteRepository repository,
+    NoteIndex index,
+    NoteIndexStore indexStore,
+    AppSettings settings,
+    INoteWindowFactory factory,
+    IMonitorProvider monitors,
+    ISystemTheme theme,
+    IFileDeletionService deleter,
+    IWriteLedger ledger,
+    RecoveryStore recovery,
+    string diagnosticsFile) : IDisposable
 {
-    private readonly NoteRepository _repository;
-    private readonly NoteIndexStore _indexStore;
-    private readonly SettingsStore _settingsStore;
-    private readonly INoteWindowFactory _factory;
-    private readonly IMonitorProvider _monitors;
-    private readonly ISystemTheme _theme;
-    private readonly IFileDeletionService _deleter;
-    private readonly IWriteLedger _ledger;
-    private readonly RecoveryStore _recovery;
-    private readonly string _diagnosticsFile;
+    /// <summary>Spec §7: "Recent Notes (10 by lastOpenedUtc)".</summary>
+    private const int RecentNotesShown = 10;
 
     private readonly Dictionary<string, INoteWindow> _windows =
         NotePath.NewMap<INoteWindow>();
 
-    private NoteIndex _index;
-    private AppSettings _settings;
+    private AppSettings _settings = settings;
     private bool _disposed;
 
     /// <summary>
@@ -64,37 +74,24 @@ public sealed class WindowManager : IDisposable
     /// WebView shell. Seeded here so the first genuine flip after startup is
     /// not swallowed.
     /// </remarks>
-    private ThemeMode _lastResolvedMode;
-
-    public WindowManager(
-        NoteRepository repository,
-        NoteIndexStore indexStore,
-        SettingsStore settingsStore,
-        INoteWindowFactory factory,
-        IMonitorProvider monitors,
-        ISystemTheme theme,
-        IFileDeletionService deleter,
-        IWriteLedger ledger,
-        RecoveryStore recovery,
-        string diagnosticsFile)
-    {
-        _repository = repository;
-        _indexStore = indexStore;
-        _settingsStore = settingsStore;
-        _factory = factory;
-        _monitors = monitors;
-        _theme = theme;
-        _deleter = deleter;
-        _ledger = ledger;
-        _recovery = recovery;
-        _diagnosticsFile = diagnosticsFile;
-
-        _settings = _settingsStore.Load();
-        _index = _indexStore.Load(_settings);
-        _lastResolvedMode = _theme.Resolve(_settings.Theme);
-    }
+    private ThemeMode _lastResolvedMode = theme.Resolve(settings.Theme);
 
     public IReadOnlyCollection<string> OpenPaths => _windows.Keys;
+
+    /// <summary>
+    /// The repository the manager is currently working against. Replaced by
+    /// <see cref="ApplySettings"/> when the notes root changes.
+    /// </summary>
+    /// <remarks>
+    /// Exposed because <c>App</c> owns the <c>NoteWatcher</c>, and a watcher
+    /// pointed at the previous root would go on reporting external edits for
+    /// a folder that is no longer the notes root while missing every edit in
+    /// the one that is.
+    /// </remarks>
+    public NoteRepository Repository { get; private set; } = repository;
+
+    /// <summary>The settings every open note is currently rendered with.</summary>
+    public AppSettings Settings => _settings;
 
     /// <summary>
     /// Recreates a window for every note marked <c>isOpen</c>.
@@ -106,7 +103,7 @@ public sealed class WindowManager : IDisposable
     /// </remarks>
     public void RestoreOpenNotes()
     {
-        foreach (var (path, state) in _index.Notes.ToList())
+        foreach (var (path, state) in index.Notes.ToList())
         {
             if (!state.IsOpen) continue;
 
@@ -116,7 +113,7 @@ public sealed class WindowManager : IDisposable
                 // running. Leave the entry alone -- it holds geometry that
                 // costs nothing and would be missed if the file returns.
                 DiagnosticsLog.Write(
-                    _diagnosticsFile, $"{path}: marked open but the file is gone.");
+                    diagnosticsFile, $"{path}: marked open but the file is gone.");
                 continue;
             }
 
@@ -130,7 +127,7 @@ public sealed class WindowManager : IDisposable
     {
         if (!NotePath.TryCanonical(path, out var canonical))
         {
-            DiagnosticsLog.Write(_diagnosticsFile, $"Refused to open '{path}': unusable path.");
+            DiagnosticsLog.Write(diagnosticsFile, $"Refused to open '{path}': unusable path.");
             return;
         }
 
@@ -146,32 +143,62 @@ public sealed class WindowManager : IDisposable
         if (!File.Exists(canonical))
         {
             DiagnosticsLog.Write(
-                _diagnosticsFile, $"Refused to open '{canonical}': no such file.");
+                diagnosticsFile, $"Refused to open '{canonical}': no such file.");
             return;
         }
 
-        var state = _index.Notes.TryGetValue(canonical, out var saved)
+        var state = index.Notes.TryGetValue(canonical, out var saved)
             ? saved with { IsOpen = true, LastOpenedUtc = DateTime.UtcNow }
             : DefaultStateFor();
 
-        // No Persist here. Instantiate persists the CLAMPED state, and this
-        // used to re-persist the unclamped one straight afterwards -- so
-        // notes.json kept the off-screen geometry that had just been
-        // corrected. The window was right and only the index drifted, which is
-        // the kind of bug that surfaces one restart later.
+        // No Persist here. Instantiate persists the CLAMPED state; persisting
+        // the unclamped one as well would leave notes.json holding off-screen
+        // geometry the window itself had already corrected.
         Instantiate(canonical, state, activate);
     }
 
-    public string CreateAndOpenNote()
+    /// <summary>
+    /// New Note. Returns the path, or null when the notes root would not take
+    /// one — the caller says so, this only records it.
+    /// </summary>
+    /// <remarks>
+    /// THE GUARD IS NOT DEFENSIVE DECORATION. `CreateNewRecorded` starts with
+    /// `EnsureRootExists`, which throws for a notes root that is gone: an
+    /// unplugged drive, a dropped network share, a folder deleted from under
+    /// the app, or the one settings.json names on a machine where it never
+    /// existed. Spec §8 keeps the app alive in the tray in that state, so the
+    /// throw is one click away on the tray menu, one keypress away on the
+    /// hotkey, and reachable from `--new` -- and from a Click handler it
+    /// reaches `DispatcherUnhandledException`, which closes the whole app,
+    /// every other note's unsaved buffer included.
+    ///
+    /// Guarded HERE rather than at the three call sites, because here is where
+    /// they all route through.
+    /// </remarks>
+    public string? CreateAndOpenNote()
     {
-        // NoteRepository.CreateNewRecorded is documented NOT thread-safe and
-        // requires callers to serialise. This runs on the UI thread, which
-        // satisfies that.
-        var (path, outcome) = _repository.CreateNewRecorded();
+        string path;
+        NoteFile.WriteOutcome outcome;
+
+        try
+        {
+            // NoteRepository.CreateNewRecorded is documented NOT thread-safe
+            // and requires callers to serialise. This runs on the UI thread,
+            // which satisfies that.
+            (path, outcome) = Repository.CreateNewRecorded();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            DiagnosticsLog.Write(
+                diagnosticsFile,
+                $"A new note could not be created in '{Repository.NotesRoot}' -- {ex.Message}");
+
+            return null;
+        }
 
         // Record the creation write, or the watcher reports StickyMD's own new
         // note as an external change the moment it appears.
-        _ledger.Record(path, outcome);
+        ledger.Record(path, outcome);
 
         OpenNote(path);
 
@@ -188,10 +215,10 @@ public sealed class WindowManager : IDisposable
 
     private NoteState DefaultStateFor()
     {
-        var monitors = _monitors.GetMonitors();
+        var screens = monitors.GetMonitors();
 
-        var work = monitors.FirstOrDefault(m => m.IsPrimary)?.WorkArea
-            ?? monitors.FirstOrDefault()?.WorkArea
+        var work = screens.FirstOrDefault(m => m.IsPrimary)?.WorkArea
+            ?? screens.FirstOrDefault()?.WorkArea
             ?? new PixelRect(0, 0, 1920, 1080);
 
         // Offset each new note so a burst of them does not stack invisibly on
@@ -206,30 +233,28 @@ public sealed class WindowManager : IDisposable
             Monitor: null,
             Color: _settings.DefaultColor,
             Opacity: _settings.DefaultOpacity,
-            AlwaysOnTop: false,
+
+            // Pinned by default: a sticky note you have to hunt for behind the
+            // window you are taking notes about is not doing its job. The ⋯
+            // menu unpins per note, and the index remembers that.
+            AlwaysOnTop: true,
             IsOpen: true,
-            LastOpenedUtc: DateTime.UtcNow);
+            LastOpenedUtc: DateTime.UtcNow,
+            FontSizePx: _settings.DefaultFontSizePx);
     }
 
     private void Instantiate(string canonical, NoteState state, bool activate)
     {
         var clamped = ClampToMonitors(state);
-        var theme = NotePalette.Get(clamped.Color, _theme.Resolve(_settings.Theme));
+        var palette = NotePalette.Get(clamped.Color, theme.Resolve(_settings.Theme));
 
-        var window = _factory.Create(canonical, clamped, theme);
+        var window = factory.Create(canonical, clamped, palette, _settings.AllowRemoteImages);
 
         window.CloseRequested += CloseNote;
         window.DeleteRequested += DeleteNote;
         window.RenameRequested += OnRenameRequested;
         window.OpenNoteRequested += OnOpenNoteRequested;
         window.StateChanged += OnStateChanged;
-
-        // TEMPORARY (Plan B only). Plan C's tray owns New Note. A method
-        // group, not a lambda -- two separately-written lambda expressions
-        // compile to two different backing methods, so `-= <the other one>`
-        // in Detach would silently fail to remove this subscription.
-        if (window is NoteWindow note)
-            note.NewNoteRequested += OnNewNoteRequested;
 
         _windows[canonical] = window;
 
@@ -246,7 +271,7 @@ public sealed class WindowManager : IDisposable
 
     private void OfferRecovery(string canonical, INoteWindow window)
     {
-        var envelope = _recovery.TryLoad(canonical);
+        var envelope = recovery.TryLoad(canonical);
         if (envelope is null) return;
 
         // RecoveryStore.Clear is best-effort, so a snapshot can outlive its
@@ -263,7 +288,7 @@ public sealed class WindowManager : IDisposable
                     StringComparison.OrdinalIgnoreCase)
                 && string.Equals(envelope.Content, current.Text, StringComparison.Ordinal))
             {
-                _recovery.Clear(canonical);
+                recovery.Clear(canonical);
                 return;
             }
         }
@@ -299,18 +324,7 @@ public sealed class WindowManager : IDisposable
         window.RenameRequested -= OnRenameRequested;
         window.OpenNoteRequested -= OnOpenNoteRequested;
         window.StateChanged -= OnStateChanged;
-
-        // TEMPORARY (Plan B only), symmetric with the subscribe in
-        // Instantiate. Same method group, or this would not actually detach.
-        if (window is NoteWindow note)
-            note.NewNoteRequested -= OnNewNoteRequested;
     }
-
-    /// <summary>
-    /// TEMPORARY (Plan B only). A named method so <see cref="Detach"/> can
-    /// unsubscribe the exact delegate <see cref="Instantiate"/> subscribed.
-    /// </summary>
-    private void OnNewNoteRequested() => CreateAndOpenNote();
 
     /// <summary>
     /// The close glyph. Takes the note off the screen and leaves
@@ -348,22 +362,19 @@ public sealed class WindowManager : IDisposable
             window.Dispose();
         }
 
-        if (!_index.Notes.TryGetValue(canonical, out var state)) return;
+        if (!index.Notes.TryGetValue(canonical, out var state)) return;
 
         if (bounds is { Width: > 0, Height: > 0 } rect)
         {
-            state = state with
-            {
-                X = rect.X, Y = rect.Y, W = rect.Width, H = rect.Height,
-            };
+            state = state.WithBounds(rect);
         }
 
         // isOpen is deliberately NOT cleared. The close glyph means "off my
         // screen", not "off my desktop set" -- a note the user opened returns
         // on the next launch, and the only way out is a real deletion through
-        // the more menu. Nothing in the app clears isOpen any more: exit and
-        // logoff never did, and this path stopped after the first person to
-        // run the app closed three notes and found them gone.
+        // the more menu. Nothing in the app clears isOpen: closing three notes
+        // and finding them gone on the next launch is exactly the loss this
+        // prevents.
         //
         // A note merely PRESENT in the notes root still gets no window (see
         // RestoreOpenNotes) -- that rule is what keeps an Obsidian vault from
@@ -381,6 +392,27 @@ public sealed class WindowManager : IDisposable
     public void ShowAll()
     {
         foreach (var window in _windows.Values) window.ShowNote(activate: false);
+    }
+
+    /// <summary>
+    /// The tray's left click, per spec §7: "Left-click toggles Show All /
+    /// Hide All".
+    /// </summary>
+    /// <remarks>
+    /// The decision is read off the screen rather than from a remembered
+    /// flag. A flag would go out of step the moment a note was closed with
+    /// <c>✕</c> or a new one opened, and the symptom is a left click that
+    /// needs pressing twice.
+    ///
+    /// With no windows at all this does nothing, deliberately: there is
+    /// nothing to show, and creating a note would make left-click mean two
+    /// different things depending on state. New Note is one item away on the
+    /// menu.
+    /// </remarks>
+    public void ToggleShowHideAll()
+    {
+        if (_windows.Values.Any(w => w.IsVisible)) HideAll();
+        else ShowAll();
     }
 
     /// <summary>
@@ -404,12 +436,9 @@ public sealed class WindowManager : IDisposable
             var bounds = window.Bounds;
 
             if (bounds.Width > 0 && bounds.Height > 0
-                && _index.Notes.TryGetValue(path, out var state))
+                && index.Notes.TryGetValue(path, out var state))
             {
-                Persist(path, state with
-                {
-                    X = bounds.X, Y = bounds.Y, W = bounds.Width, H = bounds.Height,
-                });
+                Persist(path, state.WithBounds(bounds));
             }
 
             // Detach BEFORE Dispose: see Detach's remarks. Without this, a
@@ -426,7 +455,7 @@ public sealed class WindowManager : IDisposable
     {
         if (!NotePath.TryCanonical(path, out var canonical)) return;
 
-        var result = _deleter.SendToRecycleBin(canonical);
+        var result = deleter.SendToRecycleBin(canonical);
 
         if (result.Outcome is DeletionOutcome.Failed or DeletionOutcome.Cancelled)
         {
@@ -434,7 +463,7 @@ public sealed class WindowManager : IDisposable
             // here would leave the file behind with nothing on screen saying
             // so.
             DiagnosticsLog.Write(
-                _diagnosticsFile,
+                diagnosticsFile,
                 $"{canonical}: delete {result.Outcome} -- {result.Message ?? "no reason given"}");
             return;
         }
@@ -450,10 +479,10 @@ public sealed class WindowManager : IDisposable
 
         // The entry goes too: geometry for a file in the Recycle Bin is
         // clutter, and restoring the file gives it a fresh default position.
-        _index.Notes.Remove(canonical);
+        index.Notes.Remove(canonical);
         SaveIndex(canonical);
 
-        _recovery.Clear(canonical);
+        recovery.Clear(canonical);
     }
 
     private void OnRenameRequested(string currentPath, string newFileName)
@@ -464,14 +493,14 @@ public sealed class WindowManager : IDisposable
 
         try
         {
-            renamed = _repository.Rename(canonical, newFileName);
+            renamed = Repository.Rename(canonical, newFileName);
         }
         catch (Exception ex) when (ex is IOException or ArgumentException)
         {
             // The name is taken, or Windows will not accept it. Both files are
             // untouched, which is the property that matters.
             DiagnosticsLog.Write(
-                _diagnosticsFile, $"{canonical}: rename refused -- {ex.Message}");
+                diagnosticsFile, $"{canonical}: rename refused -- {ex.Message}");
             return;
         }
 
@@ -501,7 +530,7 @@ public sealed class WindowManager : IDisposable
             or System.Text.DecoderFallbackException)
         {
             DiagnosticsLog.Write(
-                _diagnosticsFile,
+                diagnosticsFile,
                 $"{canonical}: an external change could not be read -- {ex.Message}");
         }
     }
@@ -538,7 +567,7 @@ public sealed class WindowManager : IDisposable
     public void OnWatcherRecovered(Exception cause)
     {
         DiagnosticsLog.Write(
-            _diagnosticsFile,
+            diagnosticsFile,
             $"The file watcher was recreated after {cause.GetType().Name}: {cause.Message}. "
                 + $"Re-reading {_windows.Count} open note(s).");
 
@@ -550,29 +579,27 @@ public sealed class WindowManager : IDisposable
     /// </summary>
     public void OnDisplaySettingsChanged()
     {
-        var monitors = _monitors.GetMonitors();
+        var screens = monitors.GetMonitors();
 
         foreach (var (path, window) in _windows.ToList())
         {
             var bounds = window.Bounds;
             if (bounds.Width <= 0 || bounds.Height <= 0) continue;
 
-            var clamped = WindowPlacement.Clamp(bounds, monitors);
+            var clamped = WindowPlacement.Clamp(bounds, screens);
 
             // Only touch a note that actually moved. Reapplying a correct rect
             // would nudge every window on every display change.
             if (clamped == bounds) continue;
 
-            if (!_index.Notes.TryGetValue(path, out var state)) continue;
+            if (!index.Notes.TryGetValue(path, out var state)) continue;
 
-            var updated = state with
-            {
-                X = clamped.X, Y = clamped.Y, W = clamped.Width, H = clamped.Height,
-            };
+            var updated = state.WithBounds(clamped);
 
             window.ApplyState(
                 updated,
-                NotePalette.Get(updated.Color, _theme.Resolve(_settings.Theme)));
+                NotePalette.Get(updated.Color, theme.Resolve(_settings.Theme)),
+                _settings.AllowRemoteImages);
 
             Persist(path, updated);
         }
@@ -585,41 +612,127 @@ public sealed class WindowManager : IDisposable
     /// </summary>
     public void OnSystemThemeChanged()
     {
-        var resolved = _theme.Resolve(_settings.Theme);
+        var resolved = theme.Resolve(_settings.Theme);
 
         // SystemTheme raises Changed for UserPreferenceCategory.General,
         // VisualStyle AND Color -- categories Windows raises for accent-colour
         // changes, wallpaper and theme touches, and a broad slice of
-        // WM_SETTINGCHANGE traffic, not only for light/dark. Every one of them
-        // used to drive ApplyState across every open window, which
-        // re-navigated each note's WebView shell and re-posted a render: a
-        // user changing their accent colour watched every note on the desktop
-        // flash, plus a redundant SetWindowPos each. NoteWindow.ApplyState
-        // guards this too, from the other side.
+        // WM_SETTINGCHANGE traffic, not only for light/dark. Without this gate
+        // every one of them would drive ApplyState across every open window
+        // and re-navigate each note's WebView shell: a user changing their
+        // accent colour would watch every note on the desktop flash.
+        // NoteWindow.ApplyState guards this too, from the other side.
         if (resolved == _lastResolvedMode) return;
 
+        ReapplyAll(resolved);
+    }
+
+    /// <summary>
+    /// Pushes the current settings and <paramref name="resolved"/> theme mode
+    /// into every open window.
+    /// </summary>
+    /// <remarks>
+    /// Geometry comes from each window's LIVE Bounds, never from the index --
+    /// taking X/Y/W/H from the index would snap every note back to its last
+    /// PERSISTED position, discarding a move that was never saved. Nothing is
+    /// persisted here either: nothing about a note's own recorded state has
+    /// changed, only how it is rendered.
+    /// </remarks>
+    private void ReapplyAll(ThemeMode resolved)
+    {
         _lastResolvedMode = resolved;
 
         foreach (var (path, window) in _windows.ToList())
         {
-            if (!_index.Notes.TryGetValue(path, out var state)) continue;
+            if (!index.Notes.TryGetValue(path, out var state)) continue;
 
             var bounds = window.Bounds;
+            var updated = bounds.Width > 0 && bounds.Height > 0 ? state.WithBounds(bounds) : state;
 
-            // Geometry from Bounds (LIVE), NEVER from _index -- the same trap
-            // OnDisplaySettingsChanged already avoids. Taking X/Y/W/H from the
-            // index would snap every note back to its last PERSISTED position
-            // on a theme flip, discarding a move that was never saved.
-            var updated = bounds.Width > 0 && bounds.Height > 0
-                ? state with { X = bounds.X, Y = bounds.Y, W = bounds.Width, H = bounds.Height }
-                : state;
-
-            window.ApplyState(updated, NotePalette.Get(updated.Color, resolved));
-
-            // No Persist: nothing about the note's own recorded state changed
-            // -- only which theme it renders with, which Resolve recomputes
-            // fresh every time anyway.
+            window.ApplyState(
+                updated, NotePalette.Get(updated.Color, resolved), _settings.AllowRemoteImages);
         }
+    }
+
+    // ---- Settings and the tray ----------------------------------------------
+
+    /// <summary>
+    /// The tray's Recent Notes list: most recently OPENED first, with the ones
+    /// that currently have a window flagged so the menu can tick them.
+    /// </summary>
+    /// <remarks>
+    /// Recent means recently OPENED, per spec §5, which is why it is ordered
+    /// by <c>lastOpenedUtc</c> off the index rather than by anything on disk. A
+    /// .md merely present in the notes root has no index entry and so does not
+    /// appear here -- pointing StickyMD at an Obsidian vault must not fill this
+    /// menu with a thousand files any more than it may carpet the desktop.
+    ///
+    /// Entries whose file has gone are dropped rather than listed and then
+    /// refused on click. The filter runs BEFORE the take, or a deleted note
+    /// would silently cost the list one of its ten slots.
+    ///
+    /// Ten is not configurable, because spec §7 fixes it and nothing asks for
+    /// another number.
+    /// </remarks>
+    public IReadOnlyList<RecentNote> RecentNotes()
+        => index.Notes
+            .OrderByDescending(e => e.Value.LastOpenedUtc)
+            .Where(e => File.Exists(e.Key))
+            .Take(RecentNotesShown)
+            .Select(e => new RecentNote(e.Key, TitleOf(e.Key), _windows.ContainsKey(e.Key)))
+            .ToList();
+
+    /// <remarks>
+    /// Reads the file, because <c>NoteTitleResolver</c> needs its content and
+    /// the index deliberately stores no title -- a cached one would go stale
+    /// the moment the note was edited in VS Code. Ten small reads on a
+    /// right-click; the notes this app is for are kilobytes.
+    /// </remarks>
+    private string TitleOf(string path)
+    {
+        try
+        {
+            return NoteTitleResolver.Resolve(NoteFile.Read(path).Text, path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+            or System.Text.DecoderFallbackException)
+        {
+            // A locked or unreadable note still belongs on the menu -- opening
+            // it is how the user finds out what is wrong with it.
+            return Path.GetFileNameWithoutExtension(path);
+        }
+    }
+
+    /// <summary>
+    /// Adopts a saved settings change and pushes it into every open note.
+    /// </summary>
+    /// <remarks>
+    /// Does NOT save settings.json -- <c>App</c> does that first, so a write
+    /// that fails does not leave the running app applying settings the file
+    /// does not hold.
+    ///
+    /// Three things travel through here. The theme, because
+    /// <c>ThemePreference</c> may have moved off System. <c>allowRemoteImages</c>,
+    /// because spec §6's CSP is fixed per shell and every open note has to
+    /// re-navigate. And the notes root, which replaces the repository so New
+    /// Note lands in the folder the user just chose rather than in the old one
+    /// -- silently creating notes somewhere settings.json no longer names was
+    /// the alternative, and it is invisible until someone goes looking for the
+    /// note they just made.
+    ///
+    /// Already-open notes are NOT moved or closed when the root changes. They
+    /// are real files at absolute paths and they stay exactly where they are;
+    /// what changes is where new ones go and which folder is watched.
+    /// </remarks>
+    public void ApplySettings(AppSettings settings)
+    {
+        var rootChanged = !NotePath.AreSame(_settings.NotesRoot, settings.NotesRoot);
+
+        _settings = settings;
+
+        if (rootChanged) Repository = new NoteRepository(settings.NotesRoot, new SystemClock());
+
+        ReapplyAll(theme.Resolve(settings.Theme));
     }
 
     // ---- Index plumbing -----------------------------------------------------
@@ -632,9 +745,9 @@ public sealed class WindowManager : IDisposable
 
     private void Rekey(string oldCanonical, string newCanonical)
     {
-        if (_index.Notes.Remove(oldCanonical, out var state))
+        if (index.Notes.Remove(oldCanonical, out var state))
         {
-            _index.Notes[newCanonical] = state;
+            index.Notes[newCanonical] = state;
             SaveIndex(newCanonical);
         }
 
@@ -671,7 +784,7 @@ public sealed class WindowManager : IDisposable
             displaced.NotifyFileDeleted();
 
             DiagnosticsLog.Write(
-                _diagnosticsFile,
+                diagnosticsFile,
                 $"'{oldCanonical}' was renamed onto '{newCanonical}', which was already open. "
                     + "The displaced note keeps its text behind the \"file is gone\" bar; "
                     + "nothing has been written to either path yet.");
@@ -685,25 +798,16 @@ public sealed class WindowManager : IDisposable
     }
 
     private NoteState ClampToMonitors(NoteState state)
-    {
-        var clamped = WindowPlacement.Clamp(
-            new PixelRect(state.X, state.Y, state.W, state.H),
-            _monitors.GetMonitors());
-
-        return state with
-        {
-            X = clamped.X, Y = clamped.Y, W = clamped.Width, H = clamped.Height,
-        };
-    }
+        => state.WithBounds(WindowPlacement.Clamp(state.Bounds, monitors.GetMonitors()));
 
     private void Persist(string canonical, NoteState state)
     {
-        _index.Notes[canonical] = state;
+        index.Notes[canonical] = state;
         SaveIndex(canonical);
     }
 
     /// <summary>
-    /// The ONLY place <c>_indexStore.Save</c> is called from.
+    /// The ONLY place <c>indexStore.Save</c> is called from.
     /// </summary>
     /// <remarks>
     /// JsonFile.Write throws on any I/O failure, so an unguarded save turned a
@@ -720,12 +824,12 @@ public sealed class WindowManager : IDisposable
     {
         try
         {
-            _indexStore.Save(_index);
+            indexStore.Save(index);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             DiagnosticsLog.Write(
-                _diagnosticsFile,
+                diagnosticsFile,
                 $"{context}: notes.json could not be written -- {ex.Message}. "
                     + "Window positions from this session may be lost; the .md files are untouched.");
         }

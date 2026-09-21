@@ -20,6 +20,10 @@ public sealed class FakeNoteWindow(string notePath, NoteState state) : INoteWind
     public PixelRect Bounds { get; set; } =
         new(state.X, state.Y, state.W, state.H);
 
+    /// <summary>
+    /// INoteWindow's, satisfied on the real window by Window.IsVisible. What
+    /// the tray's left click reads to choose between Show All and Hide All.
+    /// </summary>
     public bool IsVisible { get; private set; }
     public bool WasActivated { get; private set; }
     public bool WasFocused { get; private set; }
@@ -41,6 +45,7 @@ public sealed class FakeNoteWindow(string notePath, NoteState state) : INoteWind
     public List<NoteState> StatesApplied { get; } = [];
     public List<NoteTheme> ThemesApplied { get; } = [];
     public List<string> RenamesApplied { get; } = [];
+    public List<bool> RemoteImagePoliciesApplied { get; } = [];
 
     public event Action<string>? CloseRequested;
     public event Action<string>? DeleteRequested;
@@ -64,11 +69,12 @@ public sealed class FakeNoteWindow(string notePath, NoteState state) : INoteWind
 
     public void EnterEditMode() => EnteredEditMode = true;
 
-    public void ApplyState(NoteState state, NoteTheme theme)
+    public void ApplyState(NoteState state, NoteTheme theme, bool allowRemoteImages)
     {
         State = state;
         StatesApplied.Add(state);
         ThemesApplied.Add(theme);
+        RemoteImagePoliciesApplied.Add(allowRemoteImages);
     }
 
     public void ApplyExternalContent(NoteContent content)
@@ -118,10 +124,15 @@ public sealed class FakeNoteWindowFactory : INoteWindowFactory
 {
     public List<FakeNoteWindow> Created { get; } = [];
 
-    public INoteWindow Create(string canonicalPath, NoteState state, NoteTheme theme)
+    /// <summary>The global remote-image setting each window was born with.</summary>
+    public List<bool> CreatedWithRemoteImages { get; } = [];
+
+    public INoteWindow Create(
+        string canonicalPath, NoteState state, NoteTheme theme, bool allowRemoteImages)
     {
         var window = new FakeNoteWindow(canonicalPath, state);
         Created.Add(window);
+        CreatedWithRemoteImages.Add(allowRemoteImages);
         return window;
     }
 

@@ -15,6 +15,33 @@ public partial class App : Application
     private WindowManager? _manager;
     private NoteWatcher? _watcher;
     private SystemTheme? _theme;
+    private SettingsStore? _settingsStore;
+    private NoteIndexStore? _indexStore;
+    private WriteLedger? _ledger;
+
+    // ---- Shell services ---------------------------------------------------
+    private TrayIconService? _tray;
+    private HotkeyManager? _hotkeys;
+    private StartupManager? _startup;
+
+    /// <summary>
+    /// The one Settings window, or null when it is closed.
+    /// </summary>
+    /// <remarks>
+    /// Held because Settings is shown NON-MODAL: without this, the tray's
+    /// Settings item and the hotkey warning item would each open another copy,
+    /// and two of them saving in turn would fight over settings.json.
+    /// </remarks>
+    private SettingsWindow? _settingsWindow;
+
+    /// <summary>
+    /// Why the notes root is unusable, when it is.
+    /// </summary>
+    /// <remarks>
+    /// Spec §8: "Notes root missing → created on startup; if creation fails,
+    /// Settings opens with a banner and the app stays alive in tray."
+    /// </remarks>
+    private string? _notesRootFailure;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -65,17 +92,19 @@ public partial class App : Application
             return;
         }
 
-        var settingsStore = new SettingsStore(AppPaths.SettingsFile);
-        var settings = settingsStore.Load();
+        _settingsStore = new SettingsStore(AppPaths.SettingsFile);
+        var settings = _settingsStore.Load();
 
-        var indexStore = new NoteIndexStore(AppPaths.NoteIndexFile);
+        _indexStore = new NoteIndexStore(AppPaths.NoteIndexFile);
 
         // Load the index with the validated settings, so an entry with an
         // unusable colour or size falls back to the user's defaults rather
-        // than to the type's.
-        _ = indexStore.Load(settings);
+        // than to the type's. Loaded ONCE, here, and handed to the manager:
+        // a second Load would reset both stores' LastCorruptBackupPath before
+        // the tray got to balloon it.
+        var index = _indexStore.Load(settings);
 
-        ReportStartupState(settingsStore, indexStore);
+        ReportStartupState(_settingsStore, _indexStore);
 
         var repository = new NoteRepository(settings.NotesRoot, new SystemClock());
 
@@ -85,44 +114,40 @@ public partial class App : Application
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Exiting is correct here, not a fallback: with no notes root
-            // there is nothing to show and no Settings window until Plan C to
-            // point the user elsewhere. "Never die silently" is satisfied by
-            // saying why BEFORE exiting and recording it -- not by staying up
-            // with nothing to display. Plan C replaces this Shutdown() with
-            // Settings opened on a banner.
+            // Not a shutdown. The tray and Settings are built below this line,
+            // so the app stays up, says why, and opens the one window that can
+            // point it somewhere else. Nothing is created, nothing is opened,
+            // and no note is lost -- there are none yet.
+            _notesRootFailure =
+                $"StickyMD could not create its notes folder:\n\n{settings.NotesRoot}\n\n"
+                    + $"{ex.Message}\n\nChoose a different folder below.";
+
             DiagnosticsLog.Write(
                 AppPaths.DiagnosticsFile,
                 $"The notes root '{settings.NotesRoot}' could not be created -- {ex.Message}");
-
-            MessageBox.Show(
-                $"StickyMD could not create its notes folder:\n\n{settings.NotesRoot}\n\n{ex.Message}",
-                "StickyMD", MessageBoxButton.OK, MessageBoxImage.Warning);
-
-            Shutdown();
-            return;
         }
 
         // One shared WriteLedger for every note is what makes self-write
         // suppression work; a per-window ledger makes every save look external
         // and the note reloads in a loop. Built BEFORE the factory, which takes
         // it and passes it through to every NoteWindow it creates.
-        var ledger = new WriteLedger();
+        _ledger = new WriteLedger();
         _theme = new SystemTheme();
 
         _manager = new WindowManager(
             repository,
-            indexStore,
-            settingsStore,
-            new NoteWindowFactory(ledger),
+            index,
+            _indexStore,
+            settings,
+            new NoteWindowFactory(_ledger),
             new MonitorEnumerator(),
             _theme,
             new RecycleBinService(),
-            ledger,
+            _ledger,
             new RecoveryStore(AppPaths.RecoveryDir),
             AppPaths.DiagnosticsFile);
 
-        StartWatcher(repository, ledger);
+        StartWatcher(repository, _ledger);
 
         // SystemEvents raise on their own thread; every handler marshals to
         // the dispatcher before touching a window.
@@ -135,6 +160,8 @@ public partial class App : Application
 
         SessionEnding += OnSessionEnding;
 
+        StartShellServices(settings);
+
         _manager.RestoreOpenNotes();
 
         // Through the SAME parser the pipe uses. "Open with StickyMD" must not
@@ -143,13 +170,224 @@ public partial class App : Application
         // nothing to activate, it has just restored.
         if (e.Args.Length > 0) ApplyLaunchArgs(e.Args);
 
+        if (_notesRootFailure is not null)
+        {
+            // Spec §8. The app is alive in the tray with no notes and no
+            // folder to put one in; Settings is the only thing worth showing.
+            OpenSettings();
+            return;
+        }
+
         // First run, or every note closed: give the user something. A new note
-        // opens directly in edit mode with focus, per the spec.
-        if (_manager.OpenPaths.Count == 0) _manager.CreateAndOpenNote();
+        // opens directly in edit mode with focus, per the spec. The tray means
+        // running with zero notes is now a legitimate state rather than a dead
+        // end, but a FIRST launch that puts nothing at all on the screen is
+        // indistinguishable from one that failed.
+        if (_manager.OpenPaths.Count == 0) _tray?.NewNote();
+    }
+
+    /// <summary>
+    /// The tray, the hotkeys and the startup entry, in the order the tray needs
+    /// them: it reads both of the others.
+    /// </summary>
+    private void StartShellServices(AppSettings settings)
+    {
+        _startup = new StartupManager(
+            new RunKeyRegistry(),
+
+            // ProcessPath, never Assembly.Location: for a single-file publish
+            // that returns the extraction directory's .dll, and the Run key
+            // would point at something Windows cannot launch. Null only for a
+            // process with no executable image, which a WinExe is not.
+            Environment.ProcessPath!,
+            AppPaths.DiagnosticsFile);
+
+        _hotkeys = new HotkeyManager(AppPaths.DiagnosticsFile);
+
+        _tray = new TrayIconService(
+            _manager!,
+            _startup,
+            OpenSettings,
+
+            // A callback rather than a snapshot: the tray menu is rebuilt on
+            // every open, and a Settings save re-registers both hotkeys, so
+            // the list it flags has to be the CURRENT one.
+            () => _hotkeys!.Failures,
+            AppPaths.DiagnosticsFile);
+
+        ApplyHotkeys(settings);
+        ReportStartupStateToTray();
+    }
+
+    /// <summary>
+    /// Registers both global hotkeys and balloons anything Windows refused.
+    /// </summary>
+    /// <remarks>
+    /// Spec §7: "Registration failure names the conflicting combination in a
+    /// tray balloon and flags it in Settings; the app keeps running." The
+    /// balloon is here, the flag is <c>TrayIconService</c>'s warning item and
+    /// <c>SettingsWindow.FlagFailedHotkeys</c>.
+    ///
+    /// New Note runs straight off the hotkey message rather than being
+    /// dispatched, and that is deliberate: <c>NoteRepository.CreateNewRecorded</c>
+    /// is documented NOT thread-safe and requires its callers to serialise, and
+    /// <c>WM_HOTKEY</c> is dispatched on the UI thread, which satisfies that.
+    /// </remarks>
+    private void ApplyHotkeys(AppSettings settings)
+    {
+        if (_hotkeys is null || _manager is null) return;
+
+        _hotkeys.Apply(
+        [
+            // Through the tray, not straight to the manager: New Note can
+            // legitimately fail -- an unplugged drive, a dropped share -- and
+            // the tray is where the balloon that says so lives. Reaching the
+            // manager directly would leave HotkeyManager's own guard to
+            // swallow it into diagnostics.log, and a hotkey that quietly does
+            // nothing is the failure "never die silently" forbids.
+            (settings.NewNoteHotkey, () => _tray?.NewNote()),
+            (settings.ShowHideHotkey, _manager.ToggleShowHideAll),
+        ]);
+
+        if (_hotkeys.Failures.Count == 0) return;
+
+        _tray?.ShowBalloon(
+            "StickyMD hotkeys",
+            string.Join(
+                Environment.NewLine,
+                _hotkeys.Failures.Select(f => $"{f.Combination} {f.Reason}")),
+            warning: true);
+    }
+
+    /// <summary>
+    /// The quiet corrections already in
+    /// <c>diagnostics.log</c>, said out loud once.
+    /// </summary>
+    /// <remarks>
+    /// Only the two CORRUPT-file cases get a balloon. The per-field
+    /// <c>LastLoadIssues</c> stay in the log: a clamped opacity is a correction
+    /// the user will not miss, and popping a balloon for each one would train
+    /// them to dismiss the balloon that matters.
+    /// </remarks>
+    private void ReportStartupStateToTray()
+    {
+        if (_tray is null) return;
+
+        // No balloon for the notes-root failure: OnStartup opens Settings on a
+        // banner that says the same thing at more length and cannot be missed,
+        // and a second telling is a Windows toast that lands on the
+        // notification area and covers the tray the user now has to reach.
+
+        if (_settingsStore?.LastCorruptBackupPath is not null)
+        {
+            _tray.ShowBalloon(
+                "StickyMD settings were reset",
+                "settings.json could not be read and was kept alongside as .corrupt. "
+                    + "Defaults are in use.",
+                warning: true);
+        }
+
+        if (_indexStore?.LastCorruptBackupPath is not null)
+        {
+            // Worth being explicit that nothing was lost but geometry --
+            // "notes.json.corrupt-1 appeared" otherwise reads as data loss.
+            _tray.ShowBalloon(
+                "StickyMD note positions were reset",
+                "notes.json could not be read. Your .md files are untouched; "
+                    + "only window positions and colours were lost.",
+                warning: true);
+        }
+    }
+
+    /// <summary>
+    /// The tray's Settings item, the hotkey warning item, and spec §8's
+    /// notes-root failure.
+    /// </summary>
+    private void OpenSettings()
+    {
+        if (_manager is null || _startup is null) return;
+
+        if (_settingsWindow is not null)
+        {
+            // Already open. Activating beats opening a second one: two
+            // non-modal Settings windows would each hold their own copy of the
+            // settings and save over each other.
+            _settingsWindow.Activate();
+            return;
+        }
+
+        _settingsWindow = new SettingsWindow(
+            _manager.Settings,
+            _theme!.Resolve(_manager.Settings.Theme),
+            _startup,
+            _hotkeys?.Failures ?? [],
+            _notesRootFailure,
+            ApplySettings);
+
+        _settingsWindow.Closed += (_, _) => _settingsWindow = null;
+        _settingsWindow.Show();
+    }
+
+    /// <summary>
+    /// Saves a settings change and makes it true of the running app. Returns
+    /// null on success, or the message the Settings banner should show.
+    /// </summary>
+    /// <remarks>
+    /// ORDER MATTERS. The new notes root is proved usable BEFORE settings.json
+    /// is written, and settings.json is written before the running app adopts
+    /// the change -- so a refused folder or a failed write leaves both the file
+    /// and the app exactly as they were, with the reason on screen. The
+    /// alternative is an app running on settings its own file does not hold.
+    /// </remarks>
+    private string? ApplySettings(AppSettings settings)
+    {
+        if (_manager is null || _settingsStore is null) return "StickyMD is still starting up.";
+
+        var previousRoot = _manager.Settings.NotesRoot;
+        var rootChanged = !NotePath.AreSame(previousRoot, settings.NotesRoot);
+
+        try
+        {
+            new NoteRepository(settings.NotesRoot, new SystemClock()).EnsureRootExists();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return $"That folder could not be created or opened:\n\n{ex.Message}";
+        }
+
+        try
+        {
+            _settingsStore.Save(settings);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return $"settings.json could not be written:\n\n{ex.Message}";
+        }
+
+        // Cleared only once the folder is proved good, so the banner does not
+        // outlive the problem -- and stays if it was never fixed.
+        _notesRootFailure = null;
+
+        _manager.ApplySettings(settings);
+
+        // The watcher is App's, not the manager's, so the manager cannot
+        // repoint it. Without this the app would go on watching the old folder:
+        // every external edit in the new notes root missed, and every edit in
+        // the abandoned one reported against notes that are no longer there.
+        if (rootChanged) StartWatcher(_manager.Repository, _ledger!);
+
+        ApplyHotkeys(settings);
+
+        return null;
     }
 
     private void StartWatcher(NoteRepository repository, IWriteLedger ledger)
     {
+        // Disposed first: a settings change can call this a second time, and
+        // two live watchers on two roots would each raise their own events into
+        // the same handlers.
+        _watcher?.Dispose();
+
         _watcher = new NoteWatcher(repository.NotesRoot, ledger);
 
         // Every one of these fires on a watcher thread. Marshalling is not
@@ -163,7 +401,7 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// Spec 7's launch commands: nothing activates, <c>--new</c> creates,
+    /// Spec §7's launch commands: nothing activates, <c>--new</c> creates,
     /// anything else is a note to open. Used for this process's own command
     /// line and for one handed down the pipe by a launch that lost.
     /// </summary>
@@ -173,10 +411,11 @@ public partial class App : Application
 
         if (args.Count == 0)
         {
-            // Activate. Plan C's tray is what this becomes; for now showing
-            // the notes IS the app's only way of saying "I am already here",
-            // and with ShowInTaskbar false a silent no-op would be
-            // indistinguishable from a launch that failed.
+            // Activate. With no taskbar button on any note, showing them IS
+            // what "I am already here" looks like -- a silent no-op would be
+            // indistinguishable from a launch that failed. ShowAll rather than
+            // ToggleShowHideAll on purpose: a second launch means "come here",
+            // never "go away".
             _manager.ShowAll();
             return;
         }
@@ -184,12 +423,12 @@ public partial class App : Application
         foreach (var arg in args)
         {
             // Anything else beginning with "-" falls through ignored: that is
-            // --startup, plus whatever Plan C adds. Passing those to OpenNote
-            // would refuse each one into diagnostics.log as a missing file, and
-            // --startup needs no handling anyway -- RestoreOpenNotes is
-            // unconditionally ShowActivated=false, which is all it ever asked
-            // for. Unusable paths ARE OpenNote's to refuse and log.
-            if (arg.Equals("--new", StringComparison.OrdinalIgnoreCase)) _manager.CreateAndOpenNote();
+            // --startup. Passing those to OpenNote would refuse each one into
+            // diagnostics.log as a missing file, and --startup needs no
+            // handling anyway -- RestoreOpenNotes is unconditionally
+            // ShowActivated=false, which is all it ever asked for. Unusable
+            // paths ARE OpenNote's to refuse and log.
+            if (arg.Equals("--new", StringComparison.OrdinalIgnoreCase)) _tray?.NewNote();
             else if (!arg.StartsWith('-')) _manager.OpenNote(arg);
         }
     }
@@ -276,9 +515,9 @@ public partial class App : Application
     private static void ReportStartupState(
         SettingsStore settingsStore, NoteIndexStore indexStore)
     {
-        // "Never die silently" covers quiet recovery too. Plan C turns these
-        // into tray balloons; Plan B's obligation is that they exist on disk
-        // rather than in nobody's hands.
+        // "Never die silently" covers quiet recovery too. The log is the full
+        // record; ReportStartupStateToTray balloons the two cases a user has to
+        // know about.
         DiagnosticsLog.WriteAll(
             AppPaths.DiagnosticsFile,
             "settings.json corrections:",
@@ -342,6 +581,12 @@ public partial class App : Application
         SessionEnding -= OnSessionEnding;
         DispatcherUnhandledException -= OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException -= OnDomainUnhandledException;
+
+        // The tray icon FIRST: it is the only thing here with a presence
+        // outside the process, and a dead icon lingers in the notification area
+        // until something makes the shell re-poll.
+        _tray?.Dispose();
+        _hotkeys?.Dispose();
 
         _watcher?.Dispose();
         _theme?.Dispose();

@@ -40,9 +40,8 @@ public sealed class SystemTheme : ISystemTheme, IDisposable
     public SystemTheme()
     {
         // SystemEvents rather than a hidden HwndSource listening for
-        // WM_SETTINGCHANGE: it needs no message window, and Plan B has no
-        // message window yet. Note that it raises on its own thread, so
-        // consumers must marshal to the dispatcher.
+        // WM_SETTINGCHANGE: it needs no message window. It raises on its own
+        // thread, so consumers must marshal to the dispatcher.
         SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
     }
 

@@ -84,6 +84,39 @@ internal static class NativeMethods
     internal static extern int DwmSetWindowAttribute(
         IntPtr hwnd, int dwAttribute, ref int pvAttribute, int cbAttribute);
 
+    // ---- Global hotkeys ---------------------------------------------------
+
+    internal const int WM_HOTKEY = 0x0312;
+
+    /// <summary>
+    /// <c>ERROR_HOTKEY_ALREADY_REGISTERED</c>. The one failure the spec asks
+    /// to be named to the user, because it is the one they can act on.
+    /// </summary>
+    internal const int ERROR_HOTKEY_ALREADY_REGISTERED = 1409;
+
+    /// <summary>
+    /// <c>HWND_MESSAGE</c>. A message-only window: it never appears on screen,
+    /// in the taskbar, or in Alt+Tab, and it cannot be enumerated as a
+    /// top-level window -- which is exactly what the hotkey sink wants.
+    /// </summary>
+    internal static readonly IntPtr HWND_MESSAGE = new(-3);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+    // ---- System metrics ---------------------------------------------------
+
+    internal const int SM_CXSMICON = 49;
+    internal const int SM_CYSMICON = 50;
+
+    [DllImport("user32.dll")]
+    internal static extern int GetSystemMetrics(int nIndex);
+
     // ---- Shell file operations -------------------------------------------
 
     internal const uint FO_DELETE = 0x0003;

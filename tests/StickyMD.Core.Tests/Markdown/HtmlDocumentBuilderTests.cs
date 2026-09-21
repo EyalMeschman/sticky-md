@@ -14,9 +14,25 @@ public class HtmlDocumentBuilderTests
         => new(Theme, allowRemote);
 
     [Fact]
+    public void The_shell_stylesheet_carries_the_notes_own_font_size()
+    {
+        // Per note, so it has to reach the CSS rather than being a constant in
+        // it. Every heading and code size is an em multiple of this one rule,
+        // which is what makes one number scale the whole note.
+        var shell = HtmlDocumentBuilder.BuildShell(Options() with { FontSizePx = 27 });
+
+        shell.ShouldContain("font-size: 27px;");
+    }
+
+    [Fact]
+    public void The_shell_font_size_defaults_to_the_one_canonical_number()
+        => HtmlDocumentBuilder.BuildShell(Options())
+            .ShouldContain($"font-size: {HtmlDocumentBuilder.DefaultFontSizePx}px;");
+
+    [Fact]
     public void The_default_csp_allows_only_the_virtual_host_and_data_images()
     {
-        var csp = HtmlDocumentBuilder.BuildCsp(allowRemoteImages: false, "note.local", "N");
+        var csp = HtmlDocumentBuilder.BuildCsp(allowRemoteImages: false, "N");
 
         csp.ShouldContain("img-src https://note.local data:");
         csp.ShouldNotContain("https:;");
@@ -26,7 +42,7 @@ public class HtmlDocumentBuilderTests
     [Fact]
     public void Enabling_remote_images_adds_https_to_img_src_only()
     {
-        var csp = HtmlDocumentBuilder.BuildCsp(allowRemoteImages: true, "note.local", "N");
+        var csp = HtmlDocumentBuilder.BuildCsp(allowRemoteImages: true, "N");
 
         csp.ShouldContain("img-src https://note.local data: https:");
         csp.ShouldContain("default-src 'none'");
@@ -36,7 +52,7 @@ public class HtmlDocumentBuilderTests
     [Fact]
     public void The_csp_forbids_everything_the_note_has_no_use_for()
     {
-        var csp = HtmlDocumentBuilder.BuildCsp(allowRemoteImages: true, "note.local", "N");
+        var csp = HtmlDocumentBuilder.BuildCsp(allowRemoteImages: true, "N");
 
         // A note renders text and images. It never fetches, submits, frames, or
         // resolves a relative URL -- and a synced note is exactly the place a
@@ -58,7 +74,7 @@ public class HtmlDocumentBuilderTests
         var nonce = Regex.Match(shell, "nonce-([A-Za-z0-9+/=]+)").Groups[1].Value;
         nonce.ShouldNotBeNullOrEmpty();
 
-        shell.ShouldContain(HtmlDocumentBuilder.BuildCsp(false, "note.local", nonce));
+        shell.ShouldContain(HtmlDocumentBuilder.BuildCsp(false, nonce));
     }
 
     [Fact]

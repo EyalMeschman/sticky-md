@@ -44,9 +44,6 @@ public sealed class FakeNoteFileGateway : INoteFileGateway
         WrittenFormats.Add(format);
 
         var bytes = System.Text.Encoding.UTF8.GetBytes(text);
-        return new NoteFile.WriteOutcome(
-            bytes.LongLength,
-            new DateTime(2026, 9, 2, 12, 0, 0, DateTimeKind.Utc),
-            NoteFile.Sha256(bytes));
+        return new NoteFile.WriteOutcome(bytes.LongLength, NoteFile.Sha256(bytes));
     }
 }

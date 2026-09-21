@@ -46,7 +46,7 @@ public sealed class MonitorEnumerator : IMonitorProvider
             mapped.Add(new MonitorInfo(
                 monitor.Bounds,
                 monitor.WorkArea,
-                // RAW DPI -- 96, 120, 144 -- never a scale factor. Plan A's
+                // RAW DPI -- 96, 120, 144 -- never a scale factor. Core's
                 // WindowPlacementTests construct Dpi: 96 and Dpi: 144, and a
                 // scale factor here would be 96x off with nothing failing
                 // loudly. Zero means GetDpiForMonitor failed; 96 is the only

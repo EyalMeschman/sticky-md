@@ -113,15 +113,6 @@ public class PathIdentityTests
     }
 
     [Fact]
-    public void WriteLedger_Normalize_and_NotePath_Canonical_agree()
-    {
-        using var dir = new TempDir();
-        var messy = Path.Combine(dir.Path, ".", "n.md");
-
-        WriteLedger.Normalize(messy).ShouldBe(NotePath.Canonical(messy));
-    }
-
-    [Fact]
     public void The_write_ledger_suppresses_a_write_looked_up_by_a_different_spelling()
     {
         using var dir = new TempDir();

@@ -11,8 +11,8 @@ and hotkeys outside unit testing and covers them here instead.
 ## Run the two scripts first
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scriptserify-smoke.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File scriptserify-smoke-ui.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify-smoke.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify-smoke-ui.ps1
 ```
 
 `verify-smoke-ui.ps1` drives the app with real keys and a real mouse and covers
@@ -31,25 +31,24 @@ It takes about two minutes, launches the app around fifteen times, and one
 check deliberately raises a modal dialog. Its last line lists what it did
 **not** cover; that list is the rest of this document.
 
-Two things it cannot judge, by construction, and which stay here:
+One thing it cannot judge, by construction, and which stays here:
 
-- **`Ctrl+Shift+Alt+Q`.** The handler reads `Keyboard.Modifiers` off a focused
-  window's `PreviewKeyDown`, and a script has no foreground rights to give it.
-  The script exercises the same shutdown code through `SessionEnding` instead,
-  which is the logoff path, so the *key itself* is still unproven.
 - **One note in the real notes root.** The garbage-`settings.json` item forces
   the app onto its DEFAULT root, which is the whole point of that item, so it
   creates a note in `~\StickyMD Notes`. The script names the file rather than
   deleting it; nothing here ever deletes from the real notes folder.
 
-**Temporary Plan B keys:** `Ctrl+Shift+Alt+Q` exits, `Ctrl+Shift+Alt+N` makes
-a new note. Both are removed in Plan C. **Both live on a note window — do not
-close the last open note while working through this list.** With zero notes
-open there is nothing left to press either key on: `ShutdownMode` is
-`OnExplicitShutdown` and there is no tray yet, so the only way out at that
-point is ending `StickyMD.exe` from Task Manager and relaunching — and Task
-Manager skips `OnExit`, so accept that that run's geometry was not saved.
-Plan C's tray removes this hazard entirely.
+**Updated 2026-09-08, when Plan C's tray landed.** This list was written against
+the temporary `Ctrl+Shift+Alt+Q` and `Ctrl+Shift+Alt+N` keys, which are **gone**
+— they lived on a note window and existed only because Plan B had no tray. Every
+item below that said "exit with `Ctrl+Shift+Alt+Q`" now means **the tray menu's
+Exit**, and New Note is on the same menu. The hazard that came with them is gone
+with them: closing the last note no longer strands the process, because the tray
+is always there.
+
+On Windows 11 the tray icon starts in the **hidden-icons overflow** behind the
+`^` chevron rather than on the taskbar. That is Windows, not StickyMD, and an
+app cannot promote itself out of it. Drag it onto the taskbar once and it stays.
 
 ## Chrome and transparency
 
@@ -159,7 +158,7 @@ Run these four together. **If all four fail, the drag handler moved to the
 
 The headline hazard. Get any of these wrong and the desktop empties.
 
-- [ ] Open three notes. Exit with `Ctrl+Shift+Alt+Q`. Restart. **All three come back.**
+- [ ] Open three notes. Exit from the **tray menu**. Restart. **All three come back.**
 - [ ] Open three notes. Close one with `✕`. Restart. **All three come back** —
       `✕` means "off my screen", not "off my desktop set". Nothing in the app
       clears `isOpen` any more.
@@ -203,7 +202,7 @@ real failure and a race look identical.
       instance, and Task Manager still shows one process.
 - [ ] `Start-Process StickyMD.exe -ArgumentList '--new'` with the app running:
       a new note appears in the running instance, in edit mode.
-- [ ] Exit with `Ctrl+Shift+Alt+Q`, then launch again. **It starts.** A guard
+- [ ] Exit from the **tray menu**, then launch again. **It starts.** A guard
       that outlives the process it guards locks the user out of their own app.
 - [ ] End `StickyMD.exe` from Task Manager, then launch again. **It starts**,
       and `%LOCALAPPDATA%\StickyMD\StickyMD.lock` is gone. This is the crash

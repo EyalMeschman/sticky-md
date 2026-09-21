@@ -8,11 +8,10 @@ namespace StickyMD.Core.Diagnostics;
 /// process failures.
 /// </summary>
 /// <remarks>
-/// This is the "never die silently" backstop. Plan B has no tray icon, so
-/// there is nowhere to show a balloon; without this, a clamped note colour or
-/// a dropped index entry would be a change with no explanation anywhere. Plan
-/// C surfaces the same information interactively, and this file remains the
-/// record.
+/// This is the "never die silently" backstop. The tray balloons only the two
+/// cases a user has to act on; everything else -- a clamped note colour, a
+/// dropped index entry -- would otherwise be a change with no explanation
+/// anywhere, and this file is the record.
 ///
 /// EVERY operation is best-effort and swallows its exceptions. This is the
 /// channel error paths report THROUGH -- if it can throw, it converts a

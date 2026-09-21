@@ -80,10 +80,13 @@ public class WindowManagerTests : IDisposable
         _indexStore = new NoteIndexStore(Path.Combine(_root, "notes.json"));
         if (seed is not null) _indexStore.Save(seed);
 
+        var settings = new AppSettings();
+
         _manager = new WindowManager(
             new NoteRepository(_root, new FixedClock(new DateTime(2026, 9, 2, 12, 0, 0, DateTimeKind.Utc))),
+            _indexStore.Load(settings),
             _indexStore,
-            new SettingsStore(Path.Combine(_root, "settings.json")),
+            settings,
             _factory,
             _monitors,
             _theme,
@@ -790,11 +793,38 @@ public class WindowManagerTests : IDisposable
     }
 
     [Fact]
+    public void A_notes_root_that_will_not_take_a_note_returns_null_rather_than_throwing()
+    {
+        // NEW WITH PLAN C, and it is the reason CreateAndOpenNote returns
+        // string?. CreateNewRecorded starts with EnsureRootExists, which throws
+        // for a root that is gone -- an unplugged drive, a dropped share, a
+        // folder deleted from under the app. Before Plan C that could not
+        // happen, because a notes root that would not open exited the app
+        // during startup; spec 8 now keeps the app alive in the tray instead,
+        // which put this throw one click away on the tray menu, one keypress
+        // away on the hotkey, and reachable from --new. From a Click handler it
+        // reaches DispatcherUnhandledException, so a New Note on a
+        // disconnected share closed the whole app and took every other note's
+        // unsaved buffer with it.
+        var manager = Build();
+        manager.ApplySettings(manager.Settings with { NotesRoot = @"Z:\stickymd-nowhere" });
+
+        manager.CreateAndOpenNote().ShouldBeNull();
+
+        // No window, and nothing half-created in the index.
+        _factory.Created.ShouldBeEmpty();
+        manager.OpenPaths.ShouldBeEmpty();
+
+        File.ReadAllText(Path.Combine(_root, "diagnostics.log"))
+            .ShouldContain("could not be created");
+    }
+
+    [Fact]
     public void A_new_note_is_created_open_and_marked_open()
     {
         var manager = Build();
 
-        var path = manager.CreateAndOpenNote();
+        var path = manager.CreateAndOpenNote()!;
 
         File.Exists(path).ShouldBeTrue();
         NotePath.IsCanonical(path).ShouldBeTrue();
@@ -810,13 +840,289 @@ public class WindowManagerTests : IDisposable
         // second time around -- must stay in preview.
         var manager = Build();
 
-        var created = manager.CreateAndOpenNote();
+        var created = manager.CreateAndOpenNote()!;
         _factory.For(created).EnteredEditMode.ShouldBeTrue();
 
         var existing = WriteNote("existing.md");
         manager.OpenNote(existing);
 
         _factory.For(existing).EnteredEditMode.ShouldBeFalse();
+    }
+
+    // ---- Plan C: the tray's inputs ----------------------------------------
+
+    private static NoteState OpenedAt(DateTime lastOpenedUtc) => new(
+        X: 100, Y: 100, W: 300, H: 340,
+        Monitor: null,
+        Color: NoteColor.Yellow,
+        Opacity: 1.0,
+        AlwaysOnTop: false,
+        IsOpen: true,
+        LastOpenedUtc: lastOpenedUtc);
+
+    private static DateTime Day(int day) => new(2026, 9, day, 10, 0, 0, DateTimeKind.Utc);
+
+    [Fact]
+    public void RecentNotes_is_ordered_by_last_opened_newest_first()
+    {
+        var oldest = WriteNote("oldest.md");
+        var middle = WriteNote("middle.md");
+        var newest = WriteNote("newest.md");
+
+        var index = new NoteIndex();
+        index.Notes[oldest] = OpenedAt(Day(1));
+        index.Notes[newest] = OpenedAt(Day(3));
+        index.Notes[middle] = OpenedAt(Day(2));
+
+        var recent = Build(index).RecentNotes();
+
+        recent.Select(r => r.Path).ShouldBe([newest, middle, oldest]);
+    }
+
+    [Fact]
+    public void RecentNotes_is_capped_at_ten()
+    {
+        var index = new NoteIndex();
+
+        for (var i = 0; i < 15; i++)
+            index.Notes[WriteNote($"n{i}.md")] = OpenedAt(Day(1).AddHours(i));
+
+        Build(index).RecentNotes().Count.ShouldBe(10);
+    }
+
+    [Fact]
+    public void RecentNotes_ticks_only_the_notes_that_have_a_window_right_now()
+    {
+        // The check mark means "instantiated", NOT the index's isOpen -- that
+        // is true for every note the user has ever opened, so reading it would
+        // tick the entire list.
+        var shown = WriteNote("shown.md");
+        var hidden = WriteNote("hidden.md");
+
+        var index = new NoteIndex();
+        index.Notes[shown] = OpenedAt(Day(2));
+        index.Notes[hidden] = OpenedAt(Day(1));
+
+        var manager = Build(index);
+        manager.OpenNote(shown);
+
+        var recent = manager.RecentNotes();
+
+        recent.Single(r => r.Path == shown).IsOpen.ShouldBeTrue();
+        recent.Single(r => r.Path == hidden).IsOpen.ShouldBeFalse();
+    }
+
+    [Fact]
+    public void RecentNotes_drops_an_entry_whose_file_has_gone()
+    {
+        // Listing it and then refusing the click would be a menu item that
+        // does nothing. The filter also runs BEFORE the take, so a deleted
+        // note does not silently cost the list one of its ten slots.
+        var alive = WriteNote("alive.md");
+        var gone = NotePath.Canonical(Path.Combine(_root, "gone.md"));
+
+        var index = new NoteIndex();
+        index.Notes[alive] = OpenedAt(Day(1));
+        index.Notes[gone] = OpenedAt(Day(2));
+
+        var recent = Build(index).RecentNotes();
+
+        recent.Select(r => r.Path).ShouldBe([alive]);
+    }
+
+    [Fact]
+    public void A_recent_notes_title_is_the_notes_heading_and_otherwise_its_filename()
+    {
+        var titled = WriteNote("2026-09-04-untitled.md", "# Groceries\n\n- milk\n");
+        var plain = WriteNote("standup.md", "just prose, no heading\n");
+
+        var index = new NoteIndex();
+        index.Notes[titled] = OpenedAt(Day(2));
+        index.Notes[plain] = OpenedAt(Day(1));
+
+        var recent = Build(index).RecentNotes();
+
+        recent.Single(r => r.Path == titled).Title.ShouldBe("Groceries");
+        recent.Single(r => r.Path == plain).Title.ShouldBe("standup");
+    }
+
+    [Fact]
+    public void The_tray_left_click_hides_everything_when_anything_is_visible()
+    {
+        var a = WriteNote("a.md");
+        var b = WriteNote("b.md");
+
+        var manager = Build();
+        manager.OpenNote(a);
+        manager.OpenNote(b);
+
+        manager.ToggleShowHideAll();
+
+        _factory.For(a).IsVisible.ShouldBeFalse();
+        _factory.For(b).IsVisible.ShouldBeFalse();
+
+        // isOpen is untouched by Hide All, per spec and Plan C contract 1.
+        _indexStore.Load(new AppSettings()).Notes[a].IsOpen.ShouldBeTrue();
+    }
+
+    [Fact]
+    public void The_tray_left_click_shows_everything_when_nothing_is_visible()
+    {
+        var a = WriteNote("a.md");
+
+        var manager = Build();
+        manager.OpenNote(a);
+        manager.HideAll();
+
+        manager.ToggleShowHideAll();
+
+        _factory.For(a).IsVisible.ShouldBeTrue();
+    }
+
+    [Fact]
+    public void The_tray_left_click_does_nothing_at_all_with_no_windows_open()
+    {
+        // Deliberate: there is nothing to show, and creating a note would make
+        // one click mean two different things depending on state.
+        Build().ToggleShowHideAll();
+
+        _factory.Created.ShouldBeEmpty();
+    }
+
+    // ---- Plan C: Settings --------------------------------------------------
+
+    [Fact]
+    public void A_new_window_is_born_with_the_global_remote_image_setting()
+    {
+        // Passed to the factory rather than pushed in afterwards, because the
+        // note's first WebView shell -- and the CSP baked into it -- is built
+        // before anything else gets to speak to the window.
+        var manager = Build();
+        manager.ApplySettings(manager.Settings with { AllowRemoteImages = true });
+
+        manager.OpenNote(WriteNote("n.md"));
+
+        _factory.CreatedWithRemoteImages.ShouldBe([true]);
+    }
+
+    [Fact]
+    public void ApplySettings_pushes_the_remote_image_setting_into_every_open_note()
+    {
+        // Contract 7: a meta-tag CSP is fixed at parse time, so this is what
+        // makes an open note re-navigate its shell rather than go on blocking.
+        var a = WriteNote("a.md");
+        var b = WriteNote("b.md");
+
+        var manager = Build();
+        manager.OpenNote(a);
+        manager.OpenNote(b);
+
+        manager.ApplySettings(manager.Settings with { AllowRemoteImages = true });
+
+        _factory.For(a).RemoteImagePoliciesApplied.ShouldContain(true);
+        _factory.For(b).RemoteImagePoliciesApplied.ShouldContain(true);
+    }
+
+    [Fact]
+    public void ApplySettings_stamps_live_geometry_rather_than_the_last_persisted_rect()
+    {
+        // Contract 8. Taking X/Y/W/H from the index would snap every note back
+        // to its last saved position the moment anybody pressed Save.
+        var path = WriteNote("n.md");
+
+        var manager = Build();
+        manager.OpenNote(path);
+
+        _factory.For(path).Bounds = new PixelRect(999, 888, 400, 500);
+
+        manager.ApplySettings(manager.Settings with { Theme = ThemePreference.Dark });
+
+        var applied = _factory.For(path).StatesApplied[^1];
+        applied.X.ShouldBe(999);
+        applied.Y.ShouldBe(888);
+        applied.W.ShouldBe(400);
+        applied.H.ShouldBe(500);
+    }
+
+    [Fact]
+    public void ApplySettings_repoints_the_repository_when_the_notes_root_changes()
+    {
+        // Without this, New Note keeps landing in the old folder while
+        // settings.json names the new one -- invisible until the user goes
+        // looking for the note they just made.
+        var manager = Build();
+        var moved = Path.Combine(_root, "elsewhere");
+        Directory.CreateDirectory(moved);
+
+        manager.ApplySettings(manager.Settings with { NotesRoot = moved });
+
+        NotePath.AreSame(manager.Repository.NotesRoot, moved).ShouldBeTrue();
+    }
+
+    [Fact]
+    public void ApplySettings_leaves_already_open_notes_where_they_are()
+    {
+        // They are real files at absolute paths. What changes is where NEW
+        // notes go and which folder is watched.
+        var path = WriteNote("n.md");
+
+        var manager = Build();
+        manager.OpenNote(path);
+
+        var moved = Path.Combine(_root, "elsewhere");
+        Directory.CreateDirectory(moved);
+        manager.ApplySettings(manager.Settings with { NotesRoot = moved });
+
+        manager.OpenPaths.ShouldContain(path);
+        _factory.For(path).IsDisposed.ShouldBeFalse();
+    }
+
+    [Fact]
+    public void A_new_note_starts_at_the_settings_default_text_size()
+    {
+        var manager = Build();
+        manager.ApplySettings(manager.Settings with { DefaultFontSizePx = 21 });
+
+        var path = WriteNote("n.md");
+        manager.OpenNote(path);
+
+        // The DEFAULT feeds a new note; from then on the note owns its own
+        // size, which is why it lives in notes.json rather than in settings.
+        _factory.For(path).State.FontSizePx.ShouldBe(21);
+    }
+
+    [Fact]
+    public void A_notes_own_text_size_survives_a_reopen()
+    {
+        var path = WriteNote("n.md");
+        var index = new NoteIndex();
+        index.Notes[path] = StateAt(100, 100) with { FontSizePx = 30 };
+
+        var manager = Build(index);
+        manager.RestoreOpenNotes();
+
+        _factory.For(path).State.FontSizePx.ShouldBe(30);
+    }
+
+    [Fact]
+    public void ApplySettings_changes_which_defaults_a_new_note_gets()
+    {
+        var manager = Build();
+
+        manager.ApplySettings(manager.Settings with
+        {
+            DefaultColor = NoteColor.Charcoal,
+            DefaultWidth = 512,
+            DefaultHeight = 256,
+        });
+
+        var path = WriteNote("n.md");
+        manager.OpenNote(path);
+
+        var created = _factory.For(path);
+        created.State.Color.ShouldBe(NoteColor.Charcoal);
+        created.State.W.ShouldBe(512);
+        created.State.H.ShouldBe(256);
     }
 
     // ---- Recovery offering (Step 6) ---------------------------------------

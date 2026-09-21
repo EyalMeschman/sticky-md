@@ -1,6 +1,5 @@
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Media;
 using StickyMD.Core.Theming;
 
 namespace StickyMD.App.Windows;
@@ -65,14 +64,6 @@ public sealed class InlineBarHost(Panel host)
         if (!_bars.Remove(id, out var bar)) return;
         host.Children.Remove(bar);
     }
-
-    public void DismissAll()
-    {
-        foreach (var bar in _bars.Values) host.Children.Remove(bar);
-        _bars.Clear();
-    }
-
-    public bool IsShowing(string id) => _bars.ContainsKey(id);
 
     private FrameworkElement Build(InlineBarRequest request)
     {
@@ -139,17 +130,14 @@ public sealed class InlineBarHost(Panel host)
     {
         if (element is not Border border) return;
 
-        border.Background = new SolidColorBrush(Parse(theme.CodeBg));
-        border.BorderBrush = new SolidColorBrush(Parse(theme.Border));
+        border.Background = Hex.Brush(theme.CodeBg);
+        border.BorderBrush = Hex.Brush(theme.Border);
 
         if (border.Child is Panel panel)
         {
             foreach (var child in panel.Children)
                 if (child is TextBlock text)
-                    text.Foreground = new SolidColorBrush(Parse(theme.ContentFg));
+                    text.Foreground = Hex.Brush(theme.ContentFg);
         }
     }
-
-    private static Color Parse(string hex)
-        => (Color)ColorConverter.ConvertFromString(hex)!;
 }

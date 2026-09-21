@@ -8,14 +8,11 @@ namespace StickyMD.Core.Notes;
 /// An explicit heading wins because it is an explicit title -- a note opening
 /// with "# Groceries" should say Groceries, not "2026-09-04-untitled".
 ///
-/// THERE IS NO first-non-empty-line RULE, and there used to be. The spec and
-/// Plan A both specified one (strip leading '#', truncate to 60), and it
-/// survived every review because every test fed it prose. The first real note
-/// anybody pasted in was a Markdown table, so the title became
-/// "|Shortcut|Action|" -- and the user had already renamed the file to say
-/// what the note was. The rule turned a fragment of content into a title and
-/// silently overrode a name chosen on purpose. Any note starting with a table,
-/// a list, a quote or a plain paragraph hit it.
+/// THERE IS NO first-non-empty-line RULE (the spec's revision note says why).
+/// The first real note pasted into the app was a Markdown table, so such a
+/// rule made the title "|Shortcut|Action|" and silently overrode a filename
+/// chosen on purpose. Any note starting with a table, a list, a quote or a
+/// plain paragraph would hit it.
 ///
 /// The filename is the better fallback precisely because the user controls it,
 /// through the rename prompt, and nothing else competes for it.

@@ -106,7 +106,7 @@ public static class NavigationPolicy
             // otherwise slip past a plain equality check.
             if (Uri.TryCreate(trimmed, UriKind.Absolute, out var url)
                 && TrimTrailingDot(url.Host).Equals(
-                    "note.local", StringComparison.OrdinalIgnoreCase))
+                    HtmlDocumentBuilder.VirtualHost, StringComparison.OrdinalIgnoreCase))
             {
                 return Blocked(trimmed, "the virtual host is not a navigation target");
             }

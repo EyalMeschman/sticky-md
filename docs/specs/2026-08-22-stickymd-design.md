@@ -102,24 +102,24 @@ StickyMD.Core                    StickyMD.App (WPF)
 
 ### Component responsibilities
 
-| Component               | Does                                                                 | Depends on            |
-| ----------------------- | -------------------------------------------------------------------- | --------------------- |
-| `NoteFile`              | Atomic read/write of one `.md`, preserving encoding/BOM/line endings | filesystem            |
-| `NoteRepository`        | Enumerate root, create, rename, resolve paths                        | `NoteFile`            |
-| `NoteTitleResolver`     | Derive display title from content                                    | — (pure)              |
-| `NoteWatcher`           | Debounced change events with self-write suppression                  | `FileSystemWatcher`   |
-| `MarkdownRenderer`      | Markdig AST → HTML fragment with source spans                        | Markdig               |
-| `HtmlDocumentBuilder`   | Shell HTML + CSP + theme CSS variables                               | `NotePalette`         |
-| `TaskListToggler`       | Flip a checkbox at an exact source span                              | — (pure)              |
-| `MarkdownEditOps`       | Bold/italic/list-continue/indent as pure functions                   | — (pure)              |
-| `NoteIndexStore`        | Load/save `notes.json` atomically                                    | `NoteFile` primitives |
-| `RecoveryStore`         | Write/clear/read self-describing unsaved-buffer snapshots            | filesystem            |
-| `WindowPlacement`       | Clamp a saved rect to supplied monitors                              | — (pure)              |
-| `NotePalette`           | Single source of truth for all note colors                           | — (pure)              |
-| `WindowManager`         | Owns live `NoteWindow`s; open/hide/show/dispose                      | Core + WPF            |
-| `MonitorEnumerator`     | Win32 monitor discovery → `MonitorInfo[]`                            | Win32                 |
-| `RecycleBinService`     | Delete a file to the Recycle Bin                                     | Win32 shell           |
-| `SingleInstance`        | Per-user lock file + command pipe                                    | .NET IO / IPC         |
+| Component             | Does                                                                 | Depends on            |
+| --------------------- | -------------------------------------------------------------------- | --------------------- |
+| `NoteFile`            | Atomic read/write of one `.md`, preserving encoding/BOM/line endings | filesystem            |
+| `NoteRepository`      | Enumerate root, create, rename, resolve paths                        | `NoteFile`            |
+| `NoteTitleResolver`   | Derive display title from content                                    | — (pure)              |
+| `NoteWatcher`         | Debounced change events with self-write suppression                  | `FileSystemWatcher`   |
+| `MarkdownRenderer`    | Markdig AST → HTML fragment with source spans                        | Markdig               |
+| `HtmlDocumentBuilder` | Shell HTML + CSP + theme CSS variables                               | `NotePalette`         |
+| `TaskListToggler`     | Flip a checkbox at an exact source span                              | — (pure)              |
+| `MarkdownEditOps`     | Bold/italic/list-continue/indent as pure functions                   | — (pure)              |
+| `NoteIndexStore`      | Load/save `notes.json` atomically                                    | `NoteFile` primitives |
+| `RecoveryStore`       | Write/clear/read self-describing unsaved-buffer snapshots            | filesystem            |
+| `WindowPlacement`     | Clamp a saved rect to supplied monitors                              | — (pure)              |
+| `NotePalette`         | Single source of truth for all note colors                           | — (pure)              |
+| `WindowManager`       | Owns live `NoteWindow`s; open/hide/show/dispose                      | Core + WPF            |
+| `MonitorEnumerator`   | Win32 monitor discovery → `MonitorInfo[]`                            | Win32                 |
+| `RecycleBinService`   | Delete a file to the Recycle Bin                                     | Win32 shell           |
+| `SingleInstance`      | Per-user lock file + command pipe                                    | .NET IO / IPC         |
 
 `MonitorInfo { Bounds, WorkArea, Dpi, IsPrimary, DeviceName }` is plain data. **Monitor
 discovery lives in App; placement math lives in Core** — `WindowPlacement.Clamp(savedRect,
@@ -177,7 +177,27 @@ restore land later without an index migration.
 ### `settings.json`
 
 `notesRoot`, `defaultColor` (`yellow`), `defaultOpacity` (`1.0`), `defaultSize` (`300×340`),
-`theme` (light|dark|system), `hotkeys`, `allowRemoteImages` (default `false`).
+`defaultFontSizePx` (`16`), `theme` (light|dark|system), `hotkeys`, `allowRemoteImages`
+(default `false`).
+
+> **Revised 2026-09-09, after the app was used for a day.** `defaultFontSizePx` was not in this
+> list, and text size was not adjustable at all: the shell stylesheet took `HtmlShellOptions`'
+> 14px default because nothing ever passed a value, the editor had its own hardcoded `FontSize`
+> in XAML, and Ctrl+scroll zoom is deliberately off (§6). The only lever was Windows display
+> scaling, which enlarges the whole desktop to fix one note.
+>
+> Text size is now **per note**, in `notes.json` beside `color` and `opacity`, because that is
+> what it is: a property of this note, not of the app. `defaultFontSizePx` here is only what a
+> NEW note starts at, exactly like `defaultColor` and `defaultSize`. The number 16 is declared
+> once, on `HtmlDocumentBuilder.DefaultFontSizePx`, and `AppSettings` reads it from there —
+> two constants both meaning "the default text size" is how the CSS and `settings.json` come to
+> disagree, which is the drift `NotePalette` exists to prevent for colour.
+>
+> **A missing `fontSizePx` is an upgrade, not a correction.** Every note in an index written
+> before this field deserialises to zero, and `StateValidator` turns a zero into the default
+> **silently**. Reporting it would put one line per note into `diagnostics.log` on the first run
+> after an update and teach the reader to skim past the corrections that matter. An out-of-range
+> value is a different thing and is clamped and reported, like every other bound.
 
 **`launchAtStartup` is deliberately absent.** The Run registry key is the single source of truth —
 present means enabled, absent means disabled. Caching it here would create two states to
@@ -334,8 +354,21 @@ With `CaptionHeight=0` the whole window is client area, so header buttons behave
 **It never deletes the file.** Deletion is `⋯ → Delete`, which sends the file to the Recycle Bin
 via `RecycleBinService`, and that is the only thing that removes a note from the desktop set.
 
-The `⋯` menu is exactly: **Rename…**, **Color ▸**, **Opacity ▸**, **Always on Top ☑**, ─,
-**Delete**. Every entry maps to a v1 feature; nothing else belongs there.
+The `⋯` menu is exactly: **Rename…**, **Color ▸**, **Opacity ▸**, **Text size ▸**,
+**Always on Top ☑**, ─, **Delete**. Every entry maps to a v1 feature; nothing else belongs there.
+
+> **Revised 2026-09-09.** **Text size ▸** was added, and it is the sixth entry rather than a
+> seventh thing somewhere else because text size is per-note state exactly like colour and
+> opacity — the menu that owns those is the menu that owns this. It is a slider bounded by
+> `StateValidator.MinFontSizePx`/`MaxFontSizePx` rather than by numbers picked in the view, so
+> the control cannot offer a value the validator would then correct on the next load: the user
+> would watch their own choice change by itself.
+>
+> Changing it re-navigates the note's shell rather than re-rendering its content, for the same
+> reason a colour change does: the size is a rule in the stylesheet of the page the WebView
+> navigated to, and every heading, code and blockquote size is an `em` multiple of it. So it
+> joins the theme and the remote-image policy in `NoteWindow.ApplyState`'s staleness check, and
+> one Settings save re-navigates each note once instead of twice.
 
 ### 6.2 Transparency — measured, not assumed
 
@@ -532,11 +565,46 @@ Exit
 
 `ShutdownMode=OnExplicitShutdown` — hiding or closing the last note must not exit the app.
 
+> **Revised 2026-09-08, when the tray was built.** Two things, and the package
+> choice is not one of them — `H.NotifyIcon.Wpf` was re-decided on its merits
+> against `System.Windows.Forms.NotifyIcon`, which needs no package because
+> WinForms ships in the same `Microsoft.WindowsDesktop.App` runtime, and the
+> reasoning above held: WinForms would cost `<UseWindowsForms>` plus a
+> `<Using Remove>` in two projects to stop the implicit-usings clash on
+> `MessageBox` and `Application` from failing a build that treats warnings as
+> errors, and would put a WinForms-rendered menu beside the WPF `⋯` menu on the
+> same notes.
+>
+> **The menu grows one conditional item.** When a hotkey could not be
+> registered, a warning item appears above the final separator naming it, and
+> clicking it opens Settings. The Hotkeys section below already required the
+> failure to be "flagged in Settings"; the balloon that announces it is gone by
+> the time anyone goes looking, and Settings is two clicks away through a menu
+> that otherwise gives no hint anything is wrong. The item is absent whenever
+> both hotkeys registered, so the menu above is what a working install shows.
+>
+> **The icon starts in Windows 11's hidden-icons overflow**, behind the `^`
+> chevron, and no app can promote itself out of it — the user drags it out once.
+> Not a design change, but it is the first thing that looks like the tray
+> failing to load, and `scripts/verify-smoke-ui.ps1` has to open the flyout to
+> find the icon at all.
+
 ### Hotkeys
 
 Hidden `HwndSource` + `RegisterHotKey`. Defaults `Ctrl+Alt+N` (new note), `Ctrl+Alt+S`
 (show/hide all), both configurable. Registration failure names the conflicting combination in a
 tray balloon and flags it in Settings; the app keeps running.
+
+**A hotkey must carry at least one of Ctrl, Alt, Shift or Win.** `RegisterHotKey` accepts a bare
+key and then swallows it system-wide for every other application, so a "hotkey" of `N` would make
+the letter N unusable everywhere until StickyMD exits. `HotkeySpec` in Core refuses one, the
+Settings capture box will not accept one, and `StateValidator` replaces one in a hand-edited
+`settings.json` with the default and says so. `MOD_NOREPEAT` is added at registration: without it
+Windows repeats `WM_HOTKEY` while the combination is held, and a leant-on `Ctrl+Alt+N` creates
+notes at the keyboard repeat rate — every one of them a real file in the notes root.
+
+Hotkey strings are stored canonically (`Ctrl`, `Alt`, `Shift`, `Win`, then the key), so one
+combination has exactly one spelling in `settings.json`.
 
 ### Startup
 

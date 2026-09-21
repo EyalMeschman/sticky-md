@@ -68,43 +68,6 @@ public sealed class RecoveryStore(string directory)
         catch (UnauthorizedAccessException) { return false; }
     }
 
-    public IReadOnlyList<RecoveryEnvelope> LoadAll()
-    {
-        if (!System.IO.Directory.Exists(Directory)) return [];
-
-        var envelopes = new List<RecoveryEnvelope>();
-
-        try
-        {
-            foreach (var file in System.IO.Directory.EnumerateFiles(Directory, "*.json"))
-            {
-                var envelope = JsonFile.TryRead<RecoveryEnvelope>(file);
-
-                // A well-formed but wrong-shape file deserialises to an all-default
-                // envelope. Without OriginalPath the snapshot is unattributable -- the
-                // filename is a one-way hash -- so it is worse than useless.
-                if (envelope is null
-                    || string.IsNullOrEmpty(envelope.OriginalPath)
-                    || envelope.Content is null)
-                {
-                    continue;
-                }
-
-                envelopes.Add(envelope);
-            }
-        }
-        catch (IOException)
-        {
-            // The directory vanished mid-enumeration. Return what we gathered --
-            // losing some snapshots beats throwing out of the recovery path.
-        }
-        catch (UnauthorizedAccessException)
-        {
-        }
-
-        return envelopes;
-    }
-
     private string PathFor(string notePath)
         => Path.Combine(Directory, FileNameFor(notePath));
 }

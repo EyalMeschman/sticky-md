@@ -68,58 +68,6 @@ public class RecoveryStoreTests
     }
 
     [Fact]
-    public void LoadAll_returns_every_snapshot()
-    {
-        using var dir = new TempDir();
-        var store = new RecoveryStore(dir.Path);
-        store.Save(Envelope(@"C:\notes\a.md", "A"));
-        store.Save(Envelope(@"C:\notes\b.md", "B"));
-
-        var all = store.LoadAll();
-
-        all.Count.ShouldBe(2);
-        all.Select(e => e.Content).ShouldBe(new[] { "A", "B" }, ignoreOrder: true);
-    }
-
-    [Fact]
-    public void LoadAll_identifies_notes_without_needing_the_index()
-    {
-        // The whole reason the envelope is self-describing: a corrupt or missing
-        // notes.json must not orphan recovered text.
-        using var dir = new TempDir();
-        var store = new RecoveryStore(dir.Path);
-        store.Save(Envelope(@"C:\notes\standup.md", "typed but never saved"));
-
-        var recovered = new RecoveryStore(dir.Path).LoadAll().Single();
-
-        recovered.OriginalPath.ShouldBe(@"C:\notes\standup.md");
-        recovered.Content.ShouldBe("typed but never saved");
-    }
-
-    [Fact]
-    public void LoadAll_skips_a_corrupt_envelope_instead_of_throwing()
-    {
-        using var dir = new TempDir();
-        var store = new RecoveryStore(dir.Path);
-        store.Save(Envelope(@"C:\notes\good.md", "good"));
-        File.WriteAllText(Path.Combine(dir.Path, "garbage.json"), "not json {{{");
-
-        var all = store.LoadAll();
-
-        all.Count.ShouldBe(1);
-        all[0].Content.ShouldBe("good");
-    }
-
-    [Fact]
-    public void LoadAll_on_a_missing_directory_returns_empty()
-    {
-        using var dir = new TempDir();
-        var missing = Path.Combine(dir.Path, "no-recovery-here");
-
-        new RecoveryStore(missing).LoadAll().ShouldBeEmpty();
-    }
-
-    [Fact]
     public void FileNameFor_is_a_sha256_hex_json_file()
     {
         var name = RecoveryStore.FileNameFor(@"C:\notes\a.md");
@@ -153,22 +101,6 @@ public class RecoveryStoreTests
         new RecoveryStore(nested).Save(Envelope(@"C:\notes\a.md"));
 
         Directory.Exists(nested).ShouldBeTrue();
-    }
-
-    [Fact]
-    public void LoadAll_skips_a_well_formed_file_that_is_not_an_envelope()
-    {
-        using var dir = new TempDir();
-        var store = new RecoveryStore(dir.Path);
-        store.Save(Envelope(@"C:\notes\good.md", "good"));
-        // Valid JSON, wrong shape. Deserialises to an all-default envelope, which is
-        // not null -- so without a shape check it would surface as recoverable.
-        File.WriteAllText(Path.Combine(dir.Path, "wrong-shape.json"), """{"foo":1}""");
-
-        var all = store.LoadAll();
-
-        all.Count.ShouldBe(1);
-        all[0].Content.ShouldBe("good");
     }
 
     [Fact]

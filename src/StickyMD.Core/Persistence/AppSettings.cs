@@ -1,3 +1,4 @@
+using StickyMD.Core.Markdown;
 using StickyMD.Core.Theming;
 
 namespace StickyMD.Core.Persistence;
@@ -27,6 +28,17 @@ public sealed record AppSettings
     public int DefaultWidth { get; init; } = 300;
 
     public int DefaultHeight { get; init; } = 340;
+
+    /// <summary>
+    /// The text size a NEW note starts at. Existing notes keep their own,
+    /// which lives in <c>notes.json</c>.
+    /// </summary>
+    /// <remarks>
+    /// Takes its value from <see cref="HtmlDocumentBuilder.DefaultFontSizePx"/>
+    /// rather than repeating the number, so the shell's CSS and this cannot
+    /// drift apart.
+    /// </remarks>
+    public int DefaultFontSizePx { get; init; } = HtmlDocumentBuilder.DefaultFontSizePx;
 
     public ThemePreference Theme { get; init; } = ThemePreference.System;
 

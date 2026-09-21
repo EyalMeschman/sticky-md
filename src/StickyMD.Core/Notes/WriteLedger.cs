@@ -1,13 +1,13 @@
 namespace StickyMD.Core.Notes;
 
-/// <param name="LastWriteUtc">
-/// Stored for diagnostics only. Never compared -- timestamps are unreliable
-/// across OneDrive, differing filesystems, and metadata-touching tools.
-/// </param>
+/// <remarks>
+/// Size and hash only. The write's timestamp is deliberately not kept:
+/// timestamps are unreliable across OneDrive, differing filesystems, and
+/// metadata-touching tools, so nothing may ever compare one.
+/// </remarks>
 public sealed record WriteFingerprint(
     string NormalizedPath,
     long Size,
-    DateTime LastWriteUtc,
     string ContentHash);
 
 public interface IWriteLedger
@@ -38,18 +38,10 @@ public sealed class WriteLedger : IWriteLedger
 
     private readonly object _gate = new();
 
-    /// <summary>
-    /// Kept under its historical name; <see cref="NotePath.Canonical"/> is the
-    /// one definition. Two normalisation functions is exactly how Plan A's
-    /// identity mismatch happened, so there is only one now.
-    /// </summary>
-    public static string Normalize(string path) => NotePath.Canonical(path);
-
     public void Record(string path, NoteFile.WriteOutcome outcome)
     {
-        var normalized = Normalize(path);
-        var fingerprint = new WriteFingerprint(
-            normalized, outcome.Size, outcome.LastWriteUtc, outcome.ContentHash);
+        var normalized = NotePath.Canonical(path);
+        var fingerprint = new WriteFingerprint(normalized, outcome.Size, outcome.ContentHash);
 
         lock (_gate) _entries[normalized] = fingerprint;
     }
@@ -64,7 +56,7 @@ public sealed class WriteLedger : IWriteLedger
 
     public WriteFingerprint? Peek(string path)
     {
-        var normalized = Normalize(path);
+        var normalized = NotePath.Canonical(path);
         lock (_gate) return _entries.GetValueOrDefault(normalized);
     }
 }

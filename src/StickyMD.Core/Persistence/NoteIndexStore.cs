@@ -10,9 +10,9 @@ namespace StickyMD.Core.Persistence;
 /// </summary>
 /// <remarks>
 /// Entries are deserialised one at a time on purpose. A single unknown enum
-/// string anywhere in the file used to throw JsonException from the top-level
-/// Deserialize, which sent the entire index to notes.json.corrupt-N and lost
-/// every note's position -- a hand edit to one note taking out the desktop.
+/// string anywhere in the file would otherwise throw JsonException from the
+/// top-level Deserialize, send the entire index to notes.json.corrupt-N and
+/// lose every note's position -- a hand edit to one note taking out the desktop.
 ///
 /// Keys are re-keyed to NotePath canonical form, because a hand-written or
 /// older file may hold a non-canonical path, and the window manager looks
@@ -26,8 +26,10 @@ public sealed class NoteIndexStore(string filePath)
 
     /// <summary>
     /// Corrections made by the most recent <see cref="Load"/>. Empty after a
-    /// clean load. The bootstrapper writes these to the diagnostics log; Plan C
-    /// also surfaces them in a tray balloon.
+    /// clean load. The bootstrapper writes these to the diagnostics log, and
+    /// that is where they stay: only a file that had to be moved aside as
+    /// corrupt earns a tray balloon. A balloon per clamped field would train
+    /// the user to dismiss the one that matters.
     /// </summary>
     public IReadOnlyList<ValidationIssue> LastLoadIssues { get; private set; } = [];
 

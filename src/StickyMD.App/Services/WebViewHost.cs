@@ -50,6 +50,12 @@ public sealed class WebViewHost : IDisposable
     private bool _allowRemoteImages;
     private NoteTheme? _theme;
     private Color _backdrop;
+
+    /// <summary>
+    /// The note's text size, in CSS pixels. A SHELL input, so changing it
+    /// re-navigates rather than re-renders.
+    /// </summary>
+    private int _fontSizePx = HtmlDocumentBuilder.DefaultFontSizePx;
     private RenderResult? _pendingRender;
     private int _processFailures;
     private bool _disposed;
@@ -101,12 +107,14 @@ public sealed class WebViewHost : IDisposable
     public event Action? Rendered;
 
     public async Task InitializeAsync(
-        string noteDirectory, NoteTheme theme, bool allowRemoteImages, Color backdrop)
+        string noteDirectory, NoteTheme theme, bool allowRemoteImages, Color backdrop,
+        int fontSizePx)
     {
         _noteDirectory = noteDirectory;
         _theme = theme;
         _allowRemoteImages = allowRemoteImages;
         _backdrop = backdrop;
+        _fontSizePx = fontSizePx;
 
         // BEFORE EnsureCoreWebView2Async, so the very first frame is the note
         // colour. Setting it afterwards shows a white flash first.
@@ -170,7 +178,7 @@ public sealed class WebViewHost : IDisposable
         // cross-origin fetch/XHR against the mapped note directory, which
         // nothing in this design requires. A stronger boundary at zero cost.
         core.SetVirtualHostNameToFolderMapping(
-            "note.local", noteDirectory, CoreWebView2HostResourceAccessKind.DenyCors);
+            HtmlDocumentBuilder.VirtualHost, noteDirectory, CoreWebView2HostResourceAccessKind.DenyCors);
 
         _mappedDirectory = noteDirectory;
     }
@@ -188,7 +196,7 @@ public sealed class WebViewHost : IDisposable
 
         if (_mappedDirectory.Length > 0)
         {
-            core.ClearVirtualHostNameToFolderMapping("note.local");
+            core.ClearVirtualHostNameToFolderMapping(HtmlDocumentBuilder.VirtualHost);
 
             // Cleared HERE, not left to MapNoteDirectory. That method returns
             // early when the new directory does not exist, so _mappedDirectory
@@ -209,7 +217,7 @@ public sealed class WebViewHost : IDisposable
 
         core.NavigateToString(
             HtmlDocumentBuilder.BuildShell(
-                new HtmlShellOptions(_theme, _allowRemoteImages)));
+                new HtmlShellOptions(_theme, _allowRemoteImages, FontSizePx: _fontSizePx)));
     }
 
     /// <summary>
@@ -249,11 +257,13 @@ public sealed class WebViewHost : IDisposable
     /// deliberate colour change is not worth two code paths -- and content
     /// updates, which happen constantly, still never navigate.
     /// </remarks>
-    public Task SetThemeAsync(NoteTheme theme, bool allowRemoteImages, Color backdrop)
+    public Task SetThemeAsync(
+        NoteTheme theme, bool allowRemoteImages, Color backdrop, int fontSizePx)
     {
         _theme = theme;
         _allowRemoteImages = allowRemoteImages;
         _backdrop = backdrop;
+        _fontSizePx = fontSizePx;
         _control.DefaultBackgroundColor = backdrop;
 
         NavigateShell();
@@ -389,7 +399,7 @@ public sealed class WebViewHost : IDisposable
             // the control parented in the tree -- a dispose race that shows up
             // as a blank or torn note, not as an exception here.
             await InitializeAsync(
-                _noteDirectory, _theme, _allowRemoteImages, _backdrop)
+                _noteDirectory, _theme, _allowRemoteImages, _backdrop, _fontSizePx)
                 .ConfigureAwait(true);
 
             // Re-check AFTER the await, not just on entry. Dispose() can run
@@ -466,7 +476,7 @@ public sealed class WebViewHost : IDisposable
 
             if (_mappedDirectory.Length > 0)
             {
-                try { core.ClearVirtualHostNameToFolderMapping("note.local"); }
+                try { core.ClearVirtualHostNameToFolderMapping(HtmlDocumentBuilder.VirtualHost); }
                 catch (InvalidOperationException) { /* already torn down */ }
             }
         }

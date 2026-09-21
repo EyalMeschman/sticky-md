@@ -6,8 +6,12 @@ and are not derivable from the code.
 
 ## Running the app
 
-`ShowInTaskbar="False"` on notes and no tray icon until Plan C, so the app has
-no visible presence while running. The dev loop is kill, rebuild, launch:
+`ShowInTaskbar="False"` on notes, so the tray icon is the app's only presence
+apart from the notes themselves — and **on Windows 11 a new tray icon starts
+life in the hidden-icons overflow**, behind the `^` chevron, not on the taskbar.
+An app cannot promote itself out of there; drag it out once and it stays.
+Looking for it on the taskbar and concluding the tray did not load has already
+cost time. The dev loop is kill, rebuild, launch:
 
 ```powershell
 Get-Process StickyMD -EA SilentlyContinue | Stop-Process
@@ -22,13 +26,22 @@ Start-Process C:\Users\Eyal\dev\sticky-md\src\StickyMD.App\bin\Debug\net10.0-win
 over a named pipe. That matters because every process holds its own
 in-memory copy of `notes.json` and writes the _whole snapshot_ on every save,
 so two of them silently clobber each other's rows — a note can lose its index
-entry entirely and become unreachable, because Plan B has no Open command.
+entry entirely and become unreachable. (`⋯ → Open Note…` on the tray is the
+answer to that last part now, but the clobbering is still real.)
 
 The practical consequence for the dev loop: **`Start-Process StickyMD.exe`
 against a running instance activates it rather than launching**, so the
-`Stop-Process` line above is not optional. If you are testing by hand, exit with
-`Ctrl+Shift+Alt+Q` (the temporary exit key) rather than killing the process, or
-that run's geometry is not saved.
+`Stop-Process` line above is not optional. If you are testing by hand, exit
+through **the tray menu's Exit** rather than killing the process, or that run's
+geometry is not saved. The temporary `Ctrl+Shift+Alt+Q`/`N` keys are gone.
+
+**Launching the app registers the global hotkeys**, `Ctrl+Alt+N` and
+`Ctrl+Alt+S` by default, and holds them until it exits. Both verification
+scripts deliberately write throwaway combinations into `settings.json` instead,
+because a run that grabs `Ctrl+Alt+N` takes it away from whoever is at the
+keyboard — and because `Ctrl+Alt+S` is already held by something else on this
+machine, which raised a conflict balloon on every launch whose Windows toast
+then covered the notification area and swallowed the next tray click.
 
 A running instance holds `StickyMD.exe` and makes `dotnet build` fail at the
 copy step with MSB3027 naming the PIDs. That error means "the app is running",
@@ -75,10 +88,25 @@ accumulate temp files in your Recycle Bin. That is deliberate — it is the only
 way to test `SHFileOperationW` honestly.
 
 Automated tests cannot reach the WPF shell at all: a `Window` cannot be
-constructed on an xUnit thread. `docs/checklists/2026-09-02-plan-b-smoke.md` is
-the real gate for anything involving windows, WebView2 hosting, or the save
-path, and it has to be run by a human. Three of the four worst defects found so
-far were invisible to 498 passing tests.
+constructed on an xUnit thread. The checklists are the real gate for anything
+involving windows, WebView2 hosting, the tray, the hotkeys or the save path:
+`docs/checklists/2026-09-02-plan-b-smoke.md` and
+`docs/checklists/2026-09-08-plan-c-smoke.md`. Three of the four worst defects
+found so far were invisible to a fully green test run.
+
+Most of both checklists is scripted:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify-smoke.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify-smoke-ui.ps1
+```
+
+`verify-smoke.ps1` judges everything from disk and does not touch the app.
+`verify-smoke-ui.ps1` **takes real keyboard and mouse control and it types**, so
+it needs an unattended machine — it notices a pointer it did not move and labels
+any failure recorded then as possibly-tainted rather than reporting it as a
+defect. Use `-Only <block>` while iterating; a full run costs an app launch per
+block, and that load is itself a source of the timing flakiness you then chase.
 
 ## House rules
 
@@ -96,10 +124,15 @@ far were invisible to 498 passing tests.
 
 ## When the spec and the code disagree
 
-`docs/specs/2026-08-22-stickymd-design.md` is the binding authority, and two of
-its sections have been **deliberately overridden** after the app was first run
-by a human. Both carry a dated revision note saying what changed and why:
-`isOpen` is now set once and never cleared (`✕` hides), and the display title
-is a heading-or-filename rule with no first-non-empty-line fallback. If you
-find another place the spec describes something the code does not do, that is
-a bug in one of them — decide which, fix it, and date the note.
+`docs/specs/2026-08-22-stickymd-design.md` is the binding authority, and four of
+its sections have been **deliberately overridden**. Each carries a dated
+revision note saying what changed and why:
+
+- `isOpen` is set once and never cleared (`✕` hides).
+- The display title is a heading-or-filename rule, with no
+  first-non-empty-line fallback.
+- The single-instance guard is a lock file, not a per-user named mutex.
+- The tray menu grows one conditional item when a hotkey will not register.
+
+If you find another place the spec describes something the code does not do,
+that is a bug in one of them — decide which, fix it, and date the note.

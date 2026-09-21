@@ -12,7 +12,14 @@ namespace StickyMD.App.Windows;
 /// </summary>
 public interface INoteWindowFactory
 {
-    INoteWindow Create(string canonicalPath, NoteState state, NoteTheme theme);
+    /// <param name="allowRemoteImages">
+    /// Settings' global opt-in, as it stands at creation. Handed over here
+    /// rather than pushed in afterwards because the note's first WebView shell
+    /// -- and the CSP baked into it -- is built before anything else gets a
+    /// chance to speak to the window.
+    /// </param>
+    INoteWindow Create(
+        string canonicalPath, NoteState state, NoteTheme theme, bool allowRemoteImages);
 }
 
 /// <summary>
@@ -23,6 +30,7 @@ public interface INoteWindowFactory
 /// </summary>
 public sealed class NoteWindowFactory(IWriteLedger ledger) : INoteWindowFactory
 {
-    public INoteWindow Create(string canonicalPath, NoteState state, NoteTheme theme)
-        => new NoteWindow(canonicalPath, state, theme, ledger);
+    public INoteWindow Create(
+        string canonicalPath, NoteState state, NoteTheme theme, bool allowRemoteImages)
+        => new NoteWindow(canonicalPath, state, theme, ledger, allowRemoteImages);
 }

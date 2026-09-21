@@ -13,12 +13,15 @@ namespace StickyMD.Core.Markdown;
 /// opt-in. It changes the CSP, which means changing it requires a fresh
 /// navigation; see <see cref="HtmlDocumentBuilder"/>.
 /// </param>
+/// <param name="FontSizePx">
+/// The note's own text size. Per note, not per app: it lives in
+/// <c>notes.json</c> beside the colour and the opacity, and
+/// <c>AppSettings.DefaultFontSizePx</c> is only what a NEW note starts at.
+/// </param>
 public sealed record HtmlShellOptions(
     NoteTheme Theme,
     bool AllowRemoteImages,
-    string VirtualHost = "note.local",
-    string FontFamily = "'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif",
-    int FontSizePx = 14);
+    int FontSizePx = HtmlDocumentBuilder.DefaultFontSizePx);
 
 /// <summary>
 /// Builds the static page each note's WebView2 navigates to exactly once.
@@ -50,12 +53,41 @@ public sealed record HtmlShellOptions(
 /// </remarks>
 public static class HtmlDocumentBuilder
 {
-    public static string BuildCsp(bool allowRemoteImages, string virtualHost, string nonce)
+    /// <summary>
+    /// The one starting text size, in CSS pixels.
+    /// </summary>
+    /// <remarks>
+    /// Declared HERE, and referenced by both <see cref="HtmlShellOptions"/>'s
+    /// default and <c>AppSettings.DefaultFontSizePx</c>, rather than written
+    /// three times. Two numbers both meaning "the default text size" is how the
+    /// shell's CSS and the app's settings come to disagree -- the same drift
+    /// NotePalette exists to prevent for colour.
+    ///
+    /// On this type rather than on the record because a record's
+    /// primary-constructor default cannot reference a const in its own body.
+    ///
+    /// Every heading, code and blockquote size in the stylesheet is an
+    /// <c>em</c> multiple of this, so changing it scales a note's whole
+    /// typographic scale rather than only its body text.
+    /// </remarks>
+    public const int DefaultFontSizePx = 16;
+
+    /// <summary>
+    /// The virtual host WebView2 maps onto the note's directory. The one
+    /// definition: the renderer builds image URLs against it, the CSP allows
+    /// it, the host maps it, and the navigation policy refuses to navigate to it.
+    /// </summary>
+    public const string VirtualHost = "note.local";
+
+    private const string FontFamily =
+        "'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif";
+
+    public static string BuildCsp(bool allowRemoteImages, string nonce)
     {
         // Blocking remote images by default matters because these files sync. A
         // shared note containing ![](https://example.com/tracker?id=123) must
         // not make a network request just because StickyMD rendered it.
-        var img = $"img-src https://{virtualHost} data:";
+        var img = $"img-src https://{VirtualHost} data:";
         if (allowRemoteImages) img += " https:";
 
         return string.Join("; ",
@@ -71,8 +103,7 @@ public static class HtmlDocumentBuilder
             "base-uri 'none'");
     }
 
-    public static string BuildStyleBlock(
-        NoteTheme theme, string nonce, string fontFamily, int fontSizePx)
+    public static string BuildStyleBlock(NoteTheme theme, string nonce, int fontSizePx)
     {
         var variables = new StringBuilder();
         foreach (var (name, value) in NotePalette.ToCssVariables(theme))
@@ -88,7 +119,7 @@ public static class HtmlDocumentBuilder
                 padding: 0;
                 background: var(--note-content-bg);
                 color: var(--note-content-fg);
-                font-family: {{fontFamily}};
+                font-family: {{FontFamily}};
                 font-size: {{fontSizePx}}px;
                 line-height: 1.45;
                 overflow-wrap: break-word;
@@ -144,11 +175,8 @@ public static class HtmlDocumentBuilder
         // value predictable, which is the whole point of a nonce.
         var nonce = Convert.ToBase64String(RandomNumberGenerator.GetBytes(16));
 
-        var csp = BuildCsp(options.AllowRemoteImages, options.VirtualHost, nonce);
-
-        var style = BuildStyleBlock(
-            options.Theme, nonce, options.FontFamily, options.FontSizePx);
-
+        var csp = BuildCsp(options.AllowRemoteImages, nonce);
+        var style = BuildStyleBlock(options.Theme, nonce, options.FontSizePx);
         var script = BuildBridgeScript(nonce);
 
         return $"""

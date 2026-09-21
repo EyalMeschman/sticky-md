@@ -31,7 +31,8 @@
     Windows 11 26200; SetWindowLong returns the previous ex-style with
     lastErr = 0, a textbook success, and changes nothing. WPF applies the style
     at CreateWindowEx, the one moment Windows permits it, and only when this
-    property is set in XAML. Spike 0 proved this with a four-test style matrix.
+    property is set in XAML. Proved by the style matrix in
+    docs/spikes/2026-08-22-spike-0-transparency.md.
 
     WindowStyle=None is required by WPF whenever AllowsTransparency is True.
   -->
@@ -80,9 +81,8 @@
 
         <!--
           Dimmed at rest, full on hover; always present so layout never
-          shifts. This rested at Opacity="0" until the app was first run by
-          hand, and the glyphs turned out to be undiscoverable: on a dark note
-          there was nothing at all to suggest the header had controls.
+          shifts. Not zero: invisible controls are undiscoverable, and on a
+          dark note nothing else suggests the header has controls.
           RestingGlyphOpacity in the code-behind is the other half of this
           number and the two must agree.
         -->
@@ -125,7 +125,6 @@
                  TextWrapping="Wrap"
                  BorderThickness="0"
                  Padding="10,8,10,8"
-                 FontSize="14"
                  VerticalScrollBarVisibility="Auto"
                  SpellCheck.IsEnabled="False" />
 

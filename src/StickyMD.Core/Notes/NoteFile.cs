@@ -73,8 +73,7 @@ public static class NoteFile
     }
 
     /// <summary>What a completed write produced. Feeds the write ledger.</summary>
-    public readonly record struct WriteOutcome(
-        long Size, DateTime LastWriteUtc, string ContentHash);
+    public readonly record struct WriteOutcome(long Size, string ContentHash);
 
     private const string TempSuffix = ".stickymd-tmp";
 
@@ -99,13 +98,9 @@ public static class NoteFile
                 {
                     File.Replace(temp, path, destinationBackupFileName: null);
                 }
-                catch (PlatformNotSupportedException)
+                catch (Exception ex) when (ex is PlatformNotSupportedException or IOException)
                 {
                     // Some network and virtual filesystems reject ReplaceFile.
-                    File.Move(temp, path, overwrite: true);
-                }
-                catch (IOException)
-                {
                     File.Move(temp, path, overwrite: true);
                 }
             }
@@ -120,10 +115,7 @@ public static class NoteFile
             throw;
         }
 
-        return new WriteOutcome(
-            bytes.LongLength,
-            File.GetLastWriteTimeUtc(path),
-            Sha256(bytes));
+        return new WriteOutcome(bytes.LongLength, Sha256(bytes));
     }
 
     /// <summary>
@@ -155,16 +147,14 @@ public static class NoteFile
         return format.Encoding switch
         {
             NoteEncoding.Utf8Bom =>
-                [.. Preamble(0xEF, 0xBB, 0xBF), .. new UTF8Encoding(false, true).GetBytes(normalized)],
+                [0xEF, 0xBB, 0xBF, .. new UTF8Encoding(false, true).GetBytes(normalized)],
             NoteEncoding.Utf16Le =>
-                [.. Preamble(0xFF, 0xFE), .. new UnicodeEncoding(false, false, true).GetBytes(normalized)],
+                [0xFF, 0xFE, .. new UnicodeEncoding(false, false, true).GetBytes(normalized)],
             NoteEncoding.Utf16Be =>
-                [.. Preamble(0xFE, 0xFF), .. new UnicodeEncoding(true, false, true).GetBytes(normalized)],
+                [0xFE, 0xFF, .. new UnicodeEncoding(true, false, true).GetBytes(normalized)],
             _ => new UTF8Encoding(false, true).GetBytes(normalized),
         };
     }
-
-    private static byte[] Preamble(params byte[] bytes) => bytes;
 
     private static void TryDelete(string path)
     {

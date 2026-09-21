@@ -18,10 +18,9 @@
 
     <!--
       The exe icon: what Explorer, a pinned taskbar shortcut and Alt+Tab show.
-      Notes set ShowInTaskbar="False" on purpose, so this is the only place the
-      app has a face until Plan C's tray, which reuses the same file. Built
-      from NotePalette's Yellow/Light row so the icon and a default note are
-      the same yellow.
+      Notes set ShowInTaskbar="False" on purpose, so the exe icon and the tray
+      icon are the app's whole visible face. Built from NotePalette's
+      Yellow/Light row so the icon and a default note are the same yellow.
     -->
     <ApplicationIcon>..\..\assets\stickymd.ico</ApplicationIcon>
 
@@ -31,7 +30,18 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="H.NotifyIcon.Wpf" Version="2.4.1" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4129.50" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The SAME .ico as ApplicationIcon above, embedded a second way. The Win32
+      resource ApplicationIcon produces is what Explorer reads off the exe;
+      TrayIconService needs a stream it can pick a frame out of at
+      SM_CXSMICON, and only a WPF Resource gives it a pack:// URI to open.
+    -->
+    <Resource Include="..\..\assets\stickymd.ico" Link="Assets\stickymd.ico" />
   </ItemGroup>
 
   <ItemGroup>

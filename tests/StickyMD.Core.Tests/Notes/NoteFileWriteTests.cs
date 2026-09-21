@@ -121,7 +121,6 @@ public class NoteFileWriteTests
         outcome.Size.ShouldBe(bytes.Length);
         outcome.ContentHash.ShouldBe(NoteFile.Sha256(bytes));
         outcome.ContentHash.ShouldBe(NoteFile.Read(path).ContentHash);
-        outcome.LastWriteUtc.ShouldBe(File.GetLastWriteTimeUtc(path));
     }
 
     [Fact]

@@ -4,13 +4,10 @@ namespace StickyMD.Core.Notes;
 /// The one canonical form of a note path, and the one comparer for it.
 /// </summary>
 /// <remarks>
-/// Plan A shipped four disagreeing answers to "what is a note's path?":
-/// NoteRepository handed out verbatim-joined paths, NoteWatcher emitted
-/// GetFullPath-normalised ones, RecoveryStore hashed a lowercased variant, and
-/// NoteIndexStore accepted whatever key was in the JSON. A path from one would
-/// not compare equal to a path from another, so any map keyed by note path --
-/// the window manager's open-notes map above all -- would silently miss and
-/// open a second window on a file that was already open.
+/// Every producer of a note path -- the repository, the watcher, the recovery
+/// store, the index -- must agree on its form, or a map keyed by note path
+/// (the window manager's open-notes map above all) silently misses and opens
+/// a second window on a file that is already open.
 ///
 /// THE RULES:
 ///  1. Canonical form is GetFullPath, with any trailing separator trimmed.

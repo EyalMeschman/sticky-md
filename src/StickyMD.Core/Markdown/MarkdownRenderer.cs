@@ -12,7 +12,7 @@ namespace StickyMD.Core.Markdown;
 /// False by default. Notes sync, and a shared note must not make network
 /// requests just because StickyMD rendered it.
 /// </param>
-public sealed record RenderOptions(bool AllowRemoteImages, string VirtualHost = "note.local");
+public sealed record RenderOptions(bool AllowRemoteImages);
 
 /// <param name="Token">
 /// SHA-256 of the markdown at render time. A checkbox click carries it back so
@@ -56,9 +56,7 @@ public sealed class MarkdownRenderer
         return new RenderResult(writer.ToString(), ComputeToken(markdown), blockedRemote);
     }
 
-    /// <returns>How many REMOTE images were blocked. A traversal-blocked local
-    /// image is not counted: enabling remote images would not make it load, so
-    /// offering that bar for one would be a lie.</returns>
+    /// <returns>How many REMOTE images were blocked.</returns>
     private static int RewriteImageUrls(MarkdownDocument document, RenderOptions options)
     {
         var blockedRemote = 0;
@@ -67,28 +65,21 @@ public sealed class MarkdownRenderer
         {
             if (!link.IsImage) continue;
 
-            var original = link.Url;
-            link.Url = ResolveImageUrl(original, options);
-
-            if (link.Url.StartsWith(BlockedScheme, StringComparison.Ordinal)
-                && IsRemote(original))
-            {
-                blockedRemote++;
-            }
+            link.Url = ResolveImageUrl(link.Url, options, out var blockedRemoteImage);
+            if (blockedRemoteImage) blockedRemote++;
         }
 
         return blockedRemote;
     }
 
-    private static bool IsRemote(string? url)
+    /// <param name="blockedRemote">
+    /// True only when a REMOTE image was refused. A traversal-blocked local
+    /// image does not count: enabling remote images would not make it load.
+    /// </param>
+    private static string ResolveImageUrl(string? url, RenderOptions options, out bool blockedRemote)
     {
-        var trimmed = url?.Trim() ?? string.Empty;
-        return trimmed.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
-            || trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
-    }
+        blockedRemote = false;
 
-    internal static string ResolveImageUrl(string? url, RenderOptions options)
-    {
         if (string.IsNullOrWhiteSpace(url)) return string.Empty;
 
         var trimmed = url.Trim();
@@ -99,7 +90,10 @@ public sealed class MarkdownRenderer
         if (trimmed.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
             || trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
         {
-            return options.AllowRemoteImages ? trimmed : BlockedScheme + trimmed;
+            if (options.AllowRemoteImages) return trimmed;
+
+            blockedRemote = true;
+            return BlockedScheme + trimmed;
         }
 
         // Decode once before the traversal test -- that is the depth the host will
@@ -113,7 +107,7 @@ public sealed class MarkdownRenderer
             ? trimmed[2..]
             : trimmed;
 
-        return $"https://{options.VirtualHost}/{EscapePath(relative)}";
+        return $"https://{HtmlDocumentBuilder.VirtualHost}/{EscapePath(relative)}";
     }
 
     /// <summary>

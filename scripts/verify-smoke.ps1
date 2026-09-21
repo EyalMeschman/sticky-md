@@ -237,7 +237,16 @@ function Edit-Index($pattern, $replacement) {
 }
 
 function Set-Settings($extra) {
-    $s = [ordered]@{ notesRoot = $NotesRoot }
+    # Hotkeys that nothing is likely to hold, rather than the product defaults.
+    # This script does not exercise hotkeys at all, and registering Ctrl+Alt+N
+    # globally would take it away from whoever is at the keyboard for the two
+    # minutes of a run. Ctrl+Alt+S is also already taken on this machine, which
+    # would raise a conflict balloon on every one of the launches below.
+    $s = [ordered]@{
+        notesRoot      = $NotesRoot
+        newNoteHotkey  = 'Ctrl+Alt+Shift+F9'
+        showHideHotkey = 'Ctrl+Alt+Shift+F10'
+    }
     if ($extra) { foreach ($k in $extra.Keys) { $s[$k] = $extra[$k] } }
     Write-Utf8 $Settings (($s | ConvertTo-Json -Depth 4))
 }
@@ -328,7 +337,16 @@ try {
     Check 'Degradation' 'opacity 0.0 is clamped to the 0.20 floor, not left invisible' `
         ($null -ne $entry -and [double]$entry.opacity -ge 0.2) ("opacity persisted as " + $entry.opacity)
 
-    # --- an unreachable notes root exits rather than staying up empty
+    # --- an unreachable notes root keeps the app alive in the tray
+    #
+    # CHANGED 2026-09-08, when Plan C landed. This check used to be "exits
+    # rather than staying up empty", and it asserted on the log rather than on
+    # the exit code because the warning was a MODAL dialog that owned the
+    # process until something ended it. Spec 8 always said "Settings opens with
+    # a banner and the app stays alive in tray"; Plan B could not do that half,
+    # having neither, so it showed the dialog and shut down. Both are gone. The
+    # app now stays up, and verify-smoke-ui.ps1's settings-root-failure block
+    # checks that Settings is really on screen with the banner.
     Reset-State
     Set-Settings @{ notesRoot = 'Z:\notes' }
     Start-Process $Exe | Out-Null
@@ -336,9 +354,8 @@ try {
     $log = Get-Log
     Check 'Degradation' 'An unreachable notesRoot is recorded in diagnostics.log' `
         ($log -match 'could not be created') $log
-    # The warning dialog is modal and owns the process until it is dismissed;
-    # ending the process IS the dismissal, and is why this check asserts on the
-    # log rather than on the exit code.
+    Check 'Degradation' 'An unreachable notesRoot leaves the app ALIVE rather than exiting' `
+        ($null -ne (Get-App)) 'the app exited instead of staying up in the tray'
     Stop-App
 
     # --- garbage settings.json
@@ -615,7 +632,7 @@ Write-Host 'NOT covered by this script -- still human checks:' -ForegroundColor 
 @(
     'Everything visual: translucency, rounded corners, no white flash, chrome-vs-content colour match, glyph hover reveal, pinned-above-fullscreen.'
     'Every bar: Changed on disk, Couldn''t save, file is gone, remote images blocked, recovered-snapshot. This script sees their effects on disk, never the bar itself.'
-    'The Ctrl+Shift+Alt+Q exit key. It reads Keyboard.Modifiers off a focused window, and a script with no foreground rights cannot deliver it. SessionEnding covers the same shutdown CODE, not that key.'
+    'The tray icon and its menu, the global hotkeys, and the Settings window. Those need a real pointer and real keystrokes, and verify-smoke-ui.ps1 drives them. This script exercises the same SHUTDOWN CODE through WM_QUERYENDSESSION, which is a real product path, but never through the tray Exit item.'
     'Anything driven by clicks or keystrokes: editing, checkbox toggles, the entire more menu, drag-to-move and drag-to-resize.'
     'Geometry across monitors and DPI, and the close-and-reopen geometry harvest.'
     'The WebView2 renderer-crash recovery, and the runtime-missing dialog.'

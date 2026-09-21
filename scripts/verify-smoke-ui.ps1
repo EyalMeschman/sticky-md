@@ -352,7 +352,7 @@ function Set-Index($openPaths) {
 
 <# A fresh app on a fresh note, focused and ready for keys. Returns the note
    window handle, or $null with the reason already reported as a failure. #>
-function Start-On($body, $checkName, $setup) {
+function Start-On($body, $checkName, $setup, $extraSettings) {
     if ($Only -and $checkName -notlike "*$Only*") { return $null }
 
     Stop-App
@@ -366,7 +366,31 @@ function Start-On($body, $checkName, $setup) {
     $note = Join-Path $NotesRoot 'note.md'
     Write-Utf8 $note $body
     Set-Index @($note)
-    Write-Utf8 $Settings (([ordered]@{ notesRoot = $NotesRoot } | ConvertTo-Json))
+    # Hotkeys default to combinations NOTHING is likely to hold, rather than
+    # to the product's Ctrl+Alt+N and Ctrl+Alt+S. Two separate reasons, and
+    # both cost a wrong answer before they were understood:
+    #
+    #   Ctrl+Alt+S is already taken on this machine, so every launch raised a
+    #   hotkey-conflict balloon -- and the Windows toast for it lands over the
+    #   notification area, covering the overflow flyout and swallowing the
+    #   very next tray click. Two tray checks failed against a tray that was
+    #   working perfectly.
+    #
+    #   A harness that registers Ctrl+Alt+N globally holds it for the length
+    #   of the run, taking it away from whoever is at the keyboard.
+    #
+    # The hotkey blocks below ask for what they need through $extraSettings.
+    #
+    # NOT named $settings. PowerShell variable names are case-INSENSITIVE, so a
+    # parameter called $settings shadows this script's own $Settings path and
+    # every block then wrote settings.json to an empty string.
+    $cfg = [ordered]@{
+        notesRoot      = $NotesRoot
+        newNoteHotkey  = 'Ctrl+Alt+Shift+F9'
+        showHideHotkey = 'Ctrl+Alt+Shift+F10'
+    }
+    if ($extraSettings) { foreach ($k in $extraSettings.Keys) { $cfg[$k] = $extraSettings[$k] } }
+    Write-Utf8 $Settings ($cfg | ConvertTo-Json)
 
     # Anything the block needs on disk BEFORE the app opens: an image beside
     # the note, a second .md for a link to point at.
@@ -426,6 +450,24 @@ function UiaFind($property, $value, $timeoutMs = 5000) {
 function UiaById($id, $timeoutMs = 5000) { UiaFind $AE::AutomationIdProperty $id $timeoutMs }
 function UiaByName($name, $timeoutMs = 5000) { UiaFind $AE::NameProperty $name $timeoutMs }
 
+<#
+    Like UiaFind, but NOT scoped to StickyMD's process.
+
+    The tray icon and the "Show Hidden Icons" chevron are the SHELL's
+    windows, not ours, so the process filter every other lookup here relies
+    on excludes exactly the two elements the tray checks have to find.
+#>
+function UiaFindAnywhere($property, $value, $timeoutMs = 4000) {
+    $cond = New-Object System.Windows.Automation.PropertyCondition($property, $value)
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.ElapsedMilliseconds -lt $timeoutMs) {
+        $el = $Desktop.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
+        if ($el) { return $el }
+        Start-Sleep -Milliseconds 200
+    }
+    return $null
+}
+
 function UiaInvoke($el) {
     $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
     Start-Sleep -Milliseconds 600
@@ -446,9 +488,54 @@ function UiaClick($el) {
     Start-Sleep -Milliseconds 500
 }
 
+<# A TextBox's current text, through ValuePattern. #>
+function UiaValue($el) {
+    try {
+        return $el.GetCurrentPattern(
+            [System.Windows.Automation.ValuePattern]::Pattern).Current.Value
+    }
+    catch { return $null }
+}
+
+<# A checkable MenuItem's tick, through TogglePattern. #>
+function UiaTicked($el) {
+    try {
+        return ($el.GetCurrentPattern(
+            [System.Windows.Automation.TogglePattern]::Pattern).Current.ToggleState -eq 'On')
+    }
+    catch { return $false }
+}
+
 function UiaExpand($el) {
     $el.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
     Start-Sleep -Milliseconds 600
+}
+
+<# Set a Slider's value through RangeValuePattern.
+
+   Not a mouse drag: these sliders live inside submenu items, where the thumb's
+   rectangle moves with the menu and a drag is a coin toss. UIA sets the value
+   the control actually holds. #>
+function UiaSetRange($el, $value) {
+    $el.GetCurrentPattern(
+        [System.Windows.Automation.RangeValuePattern]::Pattern).SetValue($value)
+    Start-Sleep -Milliseconds 800
+}
+
+<# The first Slider inside StickyMD's open menu. #>
+function UiaSlider($timeoutMs = 4000) {
+    $procCond = New-Object System.Windows.Automation.PropertyCondition($AE::ProcessIdProperty, (Get-App).Id)
+    $typeCond = New-Object System.Windows.Automation.PropertyCondition(
+        $AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Slider)
+    $cond = New-Object System.Windows.Automation.AndCondition($procCond, $typeCond)
+
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.ElapsedMilliseconds -lt $timeoutMs) {
+        $el = $Desktop.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
+        if ($el) { return $el }
+        Start-Sleep -Milliseconds 200
+    }
+    return $null
 }
 
 <# Every item on the open more menu, by name. #>
@@ -500,17 +587,113 @@ function Enter-EditMode {
     return $false
 }
 
-<#
-    Exit the way a person does, with the temporary Ctrl+Shift+Alt+Q key.
+# ------------------------------------------------------------------- the tray
 
-    This works only because AttachThreadInput gives the script real foreground
-    rights: the handler reads Keyboard.Modifiers off a focused window's
-    PreviewKeyDown, and without focus the key is never delivered. It was
-    written off as "not scriptable" twice before that was understood.
+<#
+    The tray icon, wherever Windows has decided to put it.
+
+    ON WINDOWS 11 A NEW TRAY ICON GOES INTO THE HIDDEN-ICONS OVERFLOW, not onto
+    the taskbar, and an app cannot promote itself out of it. So this looks for
+    the icon promoted first and otherwise clicks "Show Hidden Icons" and looks
+    again inside the flyout. Both cases are real: a user can drag the icon out,
+    and then it stays on the taskbar.
+
+    Matched on the name AND a SystemTray/NotifyIcon class name. Name alone is
+    not enough: "StickyMD" also matches this repo's own editor tabs, breadcrumbs
+    and commit messages in whatever else is on screen, and the first version of
+    this helper confidently found a VS Code breadcrumb.
 #>
-function Stop-AppViaExitKey($handle) {
-    if (-not [UiProbe]::Focus($handle)) { return $false }
-    Send '^+%q' 600
+function Find-TrayIcon($timeoutMs = 6000) {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $openedOverflow = $false
+
+    while ($sw.ElapsedMilliseconds -lt $timeoutMs) {
+        $cond = New-Object System.Windows.Automation.PropertyCondition(
+            $AE::IsControlElementProperty, $true)
+
+        foreach ($el in $Desktop.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)) {
+            if ($el.Current.Name -like '*StickyMD*' -and
+                $el.Current.ClassName -match 'SystemTray|NotifyIcon') { return $el }
+        }
+
+        if (-not $openedOverflow) {
+            $openedOverflow = $true
+            $chevron = UiaFindAnywhere $AE::NameProperty 'Show Hidden Icons' 2000
+            if ($chevron) {
+                $r = $chevron.Current.BoundingRectangle
+                [UiProbe]::Click([int]($r.X + $r.Width / 2), [int]($r.Y + $r.Height / 2))
+                Start-Sleep -Milliseconds 800
+            }
+        }
+
+        Start-Sleep -Milliseconds 250
+    }
+
+    return $null
+}
+
+<# Left-click the tray icon: spec 7's Show All / Hide All toggle. #>
+function Click-TrayIcon {
+    $icon = Find-TrayIcon
+    if (-not $icon) { return $false }
+    $r = $icon.Current.BoundingRectangle
+    [UiProbe]::Click([int]($r.X + $r.Width / 2), [int]($r.Y + $r.Height / 2))
+    Start-Sleep -Milliseconds 900
+    return $true
+}
+
+<#
+    Right-click the tray icon and wait for the menu to really be there.
+
+    POLLED, not slept: the overflow flyout has to close before the menu opens,
+    and how long that takes is not ours to know. The menu is rebuilt on every
+    open -- Recent Notes, its check marks and the startup tick are all live
+    state -- so reading a stale one is a wrong answer rather than an old one.
+#>
+function Open-TrayMenu($timeoutMs = 6000) {
+    $icon = Find-TrayIcon
+    if (-not $icon) { return $false }
+
+    $r = $icon.Current.BoundingRectangle
+    [UiProbe]::RightClick([int]($r.X + $r.Width / 2), [int]($r.Y + $r.Height / 2))
+
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.ElapsedMilliseconds -lt $timeoutMs) {
+        if (@(UiaMenuItemNames).Count -gt 0) { return $true }
+        Start-Sleep -Milliseconds 200
+    }
+
+    return $false
+}
+
+<#
+    Click a tray menu item by name.
+
+    By bounding rectangle, never InvokePattern, for the same reason the more
+    menu's Delete is: Invoke() waits for the click handler to RETURN, and
+    Settings, New Note and Open Note... each open a window from theirs.
+#>
+function Invoke-TrayItem($name, $timeoutMs = 3000) {
+    $item = UiaByName $name $timeoutMs
+    if (-not $item) { return $false }
+    UiaClick $item
+    return $true
+}
+
+<# Close whatever menu is open without choosing anything. #>
+function Close-TrayMenu { Send '{ESC}' 500 }
+
+<#
+    Exit the way a person does, from the tray menu.
+
+    This replaced Stop-AppViaExitKey and the temporary Ctrl+Shift+Alt+Q it
+    drove. Those keys are gone from NoteWindow now that the tray has landed,
+    per Plan C contract 4, and the tray's Exit is the product's only exit -- so
+    this IS the shutdown path rather than a stand-in for one.
+#>
+function Stop-AppViaTrayExit {
+    if (-not (Open-TrayMenu)) { return $false }
+    if (-not (Invoke-TrayItem 'Exit')) { return $false }
     for ($i = 0; $i -lt 50 -and (Get-App); $i++) { Start-Sleep -Milliseconds 200 }
     return (-not (Get-App))
 }
@@ -741,9 +924,9 @@ try {
     if ($ctx) {
         if (Open-MoreMenu) {
             $names = UiaMenuItemNames
-            # Spec 7's menu, verbatim. Separators are not MenuItems and do not
-            # appear here.
-            $expected = @('Rename…', 'Color', 'Opacity', 'Always on Top', 'Delete')
+            # Spec 6's menu plus Text size, which carries a dated revision note
+            # there. Separators are not MenuItems and do not appear here.
+            $expected = @('Rename…', 'Color', 'Opacity', 'Text size', 'Always on Top', 'Delete')
             $missing = @($expected | Where-Object { $names -notcontains $_ })
             Check 'More menu' 'The menu contains exactly the spec entries' `
                 ($missing.Count -eq 0) ('missing: ' + ($missing -join ', ') + ' | saw: ' + ($names -join ', '))
@@ -1233,16 +1416,16 @@ try {
             ('index keys: ' + (($idx.notes.PSObject.Properties | ForEach-Object Name) -join ' | '))
     }
 
-    # --- the temporary exit key really exits, and isOpen survives it
-    $ctx = Start-On "# Exit`r`n`r`nbody`r`n" 'exit-key'
+    # --- the tray's Exit really exits, and isOpen survives it
+    $ctx = Start-On "# Exit`r`n`r`nbody`r`n" 'tray-exit'
     if ($ctx) {
         Start-Sleep -Seconds 2
-        $exited = Stop-AppViaExitKey $ctx.Handle
-        Check 'Three states' 'Ctrl+Shift+Alt+Q exits through the app rather than being killed' `
-            $exited 'the app did not exit on the temporary exit key'
+        $exited = Stop-AppViaTrayExit
+        Check 'Three states' 'The tray menu Exit shuts the app down rather than killing it' `
+            $exited 'the app did not exit from the tray menu'
 
         if ($exited) {
-            Check 'Three states' 'Exiting with the key leaves isOpen set' `
+            Check 'Three states' 'Exiting from the tray leaves isOpen set' `
                 ((Get-Entry $ctx).isOpen -eq $true) 'the exit path cleared isOpen'
         }
     }
@@ -1309,7 +1492,7 @@ try {
 
                 # Exit through the app's own shutdown so the flush runs. A
                 # kill would skip OnExit and no snapshot would ever be written.
-                $null = Stop-AppViaExitKey $ctx.Handle
+                $null = Stop-AppViaTrayExit
                 Start-Sleep -Seconds 2
             }
         }
@@ -1324,6 +1507,457 @@ try {
         foreach ($f in $snaps) { $dump += (Get-Content $f.FullName -Raw) }
         Check 'Save failures' 'A note that cannot be saved leaves a recovery snapshot holding its text' `
             ($hasText) ('snapshot content: ' + ($dump -replace "`r`n", ' '))
+    }
+
+    # --- per-note text size: the slider, the file, and the re-render
+    $ctx = Start-On "# Text size`r`n`r`nbody text to measure`r`n" 'note-text-size'
+    if ($ctx) {
+        # The seeded index entry carries no fontSizePx, exactly like every note
+        # written before the field existed. StateValidator turns that into the
+        # settings default SILENTLY, and the app persists it.
+        Check 'Text size' 'A note with no saved text size is upgraded to the default' `
+            ((Get-Entry $ctx).fontSizePx -eq 16) `
+            ('notes.json fontSizePx: ' + (Get-Entry $ctx).fontSizePx)
+
+        $log = if (Test-Path $LogFile) { Get-Content $LogFile -Raw } else { '' }
+        Check 'Text size' 'That upgrade is SILENT, not a reported correction' `
+            ($log -notmatch 'fontSizePx') ('diagnostics.log: ' + ($log -replace "`r`n", ' / '))
+
+        $r = [UiProbe]::Bounds($ctx.Handle)
+        $small = Shoot 'text-size-16' $r
+
+        if (Open-MoreMenu) {
+            $item = UiaByName 'Text size' 3000
+            if ($item) {
+                UiaExpand $item
+                $slider = UiaSlider
+
+                if ($slider) {
+                    UiaSetRange $slider 30
+                    Send '{ESC}' 600
+                    Start-Sleep -Seconds 2
+
+                    Check 'Text size' 'The slider writes the new size to notes.json' `
+                        ((Get-Entry $ctx).fontSizePx -eq 30) `
+                        ('notes.json fontSizePx: ' + (Get-Entry $ctx).fontSizePx)
+
+                    $big = Shoot 'text-size-30' $r
+                    $diff = Get-ShotDiff $small $big
+                    Check 'Text size' 'The note actually re-renders at the new size' `
+                        ($diff -gt $ShotSame) ('shot diff ' + $diff + ' vs threshold ' + $ShotSame)
+                }
+                else {
+                    Check 'Text size' 'The slider writes the new size to notes.json' $false `
+                        'no Slider found under the Text size submenu'
+                }
+            }
+            else {
+                Check 'Text size' 'The slider writes the new size to notes.json' $false `
+                    'no Text size item on the more menu'
+            }
+        }
+        else {
+            Check 'Text size' 'The slider writes the new size to notes.json' $false `
+                'MoreButton not found by UIA'
+        }
+    }
+
+    # ======================================== Plan C: tray, hotkeys, startup
+    Write-Host ''
+    Write-Host 'Plan C: the tray, the hotkeys, the startup entry, Settings' -ForegroundColor Cyan
+
+    # --- the icon exists, and the menu is the spec's menu
+    $ctx = Start-On "# Tray`r`n`r`nbody`r`n" 'tray-menu'
+    if ($ctx) {
+        Check 'Tray' 'A tray icon appears in the notification area' `
+            ($null -ne (Find-TrayIcon)) `
+            'no StickyMD tray icon was found, promoted or in the hidden-icons overflow'
+
+        if (Open-TrayMenu) {
+            $names = @(UiaMenuItemNames)
+            $wanted = @(
+                'New Note', 'Recent Notes', 'Open Note…',
+                'Show All', 'Hide All', 'Settings', 'Launch at Startup', 'Exit')
+            $missing = @($wanted | Where-Object { $names -notcontains $_ })
+
+            Check 'Tray' 'The menu carries every item spec 7 asks for' `
+                ($missing.Count -eq 0) `
+                ('missing: ' + ($missing -join ', ') + '. saw: ' + ($names -join ' | '))
+
+            # Order, not just presence. Exit belongs last and Settings belongs
+            # below Hide All rather than among the note actions, and a menu
+            # holding the right items in the wrong order is still wrong.
+            $order = @($wanted |
+                Where-Object { $names -contains $_ } |
+                ForEach-Object { [array]::IndexOf($names, $_) })
+            $sorted = @($order | Sort-Object)
+
+            Check 'Tray' 'The menu items are in the spec''s order' `
+                ("$order" -eq "$sorted") ('positions: ' + ($order -join ','))
+
+            Close-TrayMenu
+        }
+        else {
+            Check 'Tray' 'The menu carries every item spec 7 asks for' $false `
+                'the tray menu never opened'
+        }
+    }
+
+    # --- New Note from the tray
+    $ctx = Start-On "# Tray new`r`n`r`nbody`r`n" 'tray-new-note'
+    if ($ctx) {
+        $before = @(Get-ChildItem $NotesRoot -Filter *.md).Count
+
+        if (Open-TrayMenu) {
+            $null = Invoke-TrayItem 'New Note'
+            Start-Sleep -Seconds 5
+            $after = @(Get-ChildItem $NotesRoot -Filter *.md).Count
+            $windows = [UiProbe]::Notes((Get-App).Id).Count
+
+            Check 'Tray' 'New Note from the tray writes a .md and opens a window for it' `
+                ($after -eq $before + 1 -and $windows -ge 2) `
+                ('md files {0} -> {1}, windows {2}' -f $before, $after, $windows)
+        }
+        else {
+            Check 'Tray' 'New Note from the tray writes a .md and opens a window for it' `
+                $false 'the tray menu never opened'
+        }
+    }
+
+    # --- Recent Notes: the heading as the label, and a tick for an open note
+    $ctx = Start-On "# Groceries`r`n`r`n- milk`r`n" 'tray-recent'
+    if ($ctx) {
+        if (Open-TrayMenu) {
+            $recent = UiaByName 'Recent Notes' 3000
+
+            if ($recent) {
+                UiaExpand $recent
+                Start-Sleep -Milliseconds 700
+                $names = @(UiaMenuItemNames)
+
+                Check 'Tray' 'Recent Notes labels a note with its heading, not its filename' `
+                    ($names -contains 'Groceries') ('saw: ' + ($names -join ' | '))
+
+                $item = UiaByName 'Groceries' 2000
+                Check 'Tray' 'A note that has a window is check-marked in Recent Notes' `
+                    ($null -ne $item -and (UiaTicked $item)) `
+                    'the entry for the open note was not ticked'
+            }
+            else {
+                Check 'Tray' 'Recent Notes labels a note with its heading, not its filename' `
+                    $false 'no Recent Notes item on the menu'
+            }
+
+            Close-TrayMenu
+        }
+        else {
+            Check 'Tray' 'Recent Notes labels a note with its heading, not its filename' `
+                $false 'the tray menu never opened'
+        }
+    }
+
+    # --- left-click is Show All / Hide All
+    $ctx = Start-On "# Toggle`r`n`r`nbody`r`n" 'tray-toggle'
+    if ($ctx) {
+        $before = [UiProbe]::Notes((Get-App).Id).Count
+        $null = Click-TrayIcon
+        $hidden = [UiProbe]::Notes((Get-App).Id).Count
+        $null = Click-TrayIcon
+        $shown = [UiProbe]::Notes((Get-App).Id).Count
+
+        Check 'Tray' 'Left-clicking the icon hides every note, and clicking again brings them back' `
+            ($before -ge 1 -and $hidden -eq 0 -and $shown -eq $before) `
+            ('visible windows: {0} -> {1} -> {2}' -f $before, $hidden, $shown)
+
+        # Contract 1. Hide All is "off my screen", never "off my desktop set".
+        Check 'Tray' 'Hiding from the tray leaves isOpen set' `
+            ((Get-Entry $ctx).isOpen -eq $true) 'the hide path cleared isOpen'
+    }
+
+    # --- Launch at Startup, against the real HKCU Run key
+    $ctx = Start-On "# Startup`r`n`r`nbody`r`n" 'tray-startup'
+    if ($ctx) {
+        $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+
+        # This block writes to the user's OWN Run key, because presence in that
+        # key IS the feature and there is nothing else to point it at. The
+        # original value is put back in the finally, whatever happens.
+        $original = (Get-ItemProperty -Path $runKey -Name StickyMD -ErrorAction SilentlyContinue).StickyMD
+
+        try {
+            Remove-ItemProperty -Path $runKey -Name StickyMD -Force -ErrorAction SilentlyContinue
+
+            $written = ''
+            $onOk = $false
+
+            if (Open-TrayMenu) {
+                $null = Invoke-TrayItem 'Launch at Startup'
+                Start-Sleep -Seconds 1
+                $written = (Get-ItemProperty -Path $runKey -Name StickyMD -ErrorAction SilentlyContinue).StickyMD
+                $onOk = ($written -like '*StickyMD.exe" --startup')
+            }
+
+            Check 'Startup' 'Ticking Launch at Startup writes the quoted exe and --startup to HKCU Run' `
+                $onOk ('Run value: ' + $written)
+
+            if ($onOk -and (Open-TrayMenu)) {
+                $item = UiaByName 'Launch at Startup' 3000
+
+                Check 'Startup' 'The menu reads the tick back out of the registry' `
+                    ($null -ne $item -and (UiaTicked $item)) `
+                    'the item was not ticked on the next open, so the tick is cached rather than read'
+
+                $null = Invoke-TrayItem 'Launch at Startup'
+                Start-Sleep -Seconds 1
+                $after = (Get-ItemProperty -Path $runKey -Name StickyMD -ErrorAction SilentlyContinue).StickyMD
+
+                # Presence IS the state. A value of "0" would still be a Run
+                # entry, and Windows would still launch it.
+                Check 'Startup' 'Unticking removes the value rather than writing a false' `
+                    ($null -eq $after) ('Run value survived as: ' + $after)
+            }
+        }
+        finally {
+            Remove-ItemProperty -Path $runKey -Name StickyMD -Force -ErrorAction SilentlyContinue
+            if ($original) { Set-ItemProperty -Path $runKey -Name StickyMD -Value $original }
+
+            Check 'Script' 'Your own HKCU Run key was left as it was' `
+                ((Get-ItemProperty -Path $runKey -Name StickyMD -ErrorAction SilentlyContinue).StickyMD -eq $original) `
+                ('expected ' + $original)
+        }
+    }
+
+    # --- Settings opens from the tray, and Save reaches settings.json
+    $ctx = Start-On "# Settings`r`n`r`nbody`r`n" 'tray-settings'
+    if ($ctx) {
+        if (Open-TrayMenu) {
+            $null = Invoke-TrayItem 'Settings'
+            Start-Sleep -Seconds 3
+
+            $rootBox = UiaById 'NotesRootBox' 6000
+            Check 'Settings' 'Settings opens from the tray menu' `
+                ($null -ne $rootBox) 'no Settings window appeared'
+
+            if ($rootBox) {
+                Check 'Settings' 'Settings shows the notes folder the app is actually using' `
+                    ((UiaValue $rootBox) -eq $NotesRoot) `
+                    ('the box holds: ' + (UiaValue $rootBox))
+
+                $widthBox = UiaById 'WidthBox' 4000
+                $save = UiaById 'SaveButton' 4000
+
+                if ($widthBox -and $save) {
+                    UiaClick $widthBox
+                    Send '^a' 250
+                    Send '512' 350
+                    UiaClick $save
+                    Start-Sleep -Seconds 3
+
+                    $cfg = Get-Content $Settings -Raw | ConvertFrom-Json
+
+                    Check 'Settings' 'Saving Settings writes the change to settings.json' `
+                        ($cfg.defaultWidth -eq 512) `
+                        ('settings.json defaultWidth: ' + $cfg.defaultWidth)
+
+                    # The rest of the file has to survive a save that touched
+                    # one field. An editor that rewrites only what it displays
+                    # would silently drop the notes root.
+                    Check 'Settings' 'Saving one field leaves the rest of settings.json alone' `
+                        ($cfg.notesRoot -eq $NotesRoot) ('notesRoot: ' + $cfg.notesRoot)
+
+                    Check 'Settings' 'The Settings window closes on Save' `
+                        ($null -eq (UiaById 'NotesRootBox' 1500)) 'the window was still open'
+                }
+                else {
+                    Check 'Settings' 'Saving Settings writes the change to settings.json' `
+                        $false 'the width box or the Save button was not reachable'
+                }
+            }
+        }
+        else {
+            Check 'Settings' 'Settings opens from the tray menu' $false 'the tray menu never opened'
+        }
+    }
+
+    # --- the global hotkeys, with nothing of StickyMD's on screen
+    $ctx = Start-On "# Hotkey`r`n`r`nbody`r`n" 'hotkey-global' $null `
+        @{ newNoteHotkey = 'Ctrl+Alt+Shift+F9'; showHideHotkey = 'Ctrl+Alt+Shift+F10' }
+    if ($ctx) {
+        # Hidden FIRST, deliberately. A hotkey that only fires while a note
+        # holds focus is not a global hotkey, and being global is the whole
+        # feature -- the temporary Ctrl+Shift+Alt+N key it replaced needed a
+        # focused note window and was never a hotkey at all.
+        $null = Click-TrayIcon
+        Start-Sleep -Seconds 1
+
+        $hidden = [UiProbe]::Notes((Get-App).Id).Count
+        $before = @(Get-ChildItem $NotesRoot -Filter *.md).Count
+
+        Send '^%+{F9}' 3000
+        $after = @(Get-ChildItem $NotesRoot -Filter *.md).Count
+
+        Check 'Hotkeys' 'The new-note hotkey creates a note with no StickyMD window on screen' `
+            ($hidden -eq 0 -and $after -eq $before + 1) `
+            ('windows before the key {0}, md files {1} -> {2}' -f $hidden, $before, $after)
+
+        # The new note opened, so there is something to hide again.
+        $visible = [UiProbe]::Notes((Get-App).Id).Count
+        Send '^%+{F10}' 2000
+        $afterKey = [UiProbe]::Notes((Get-App).Id).Count
+
+        Check 'Hotkeys' 'The show/hide hotkey hides every note' `
+            ($visible -ge 1 -and $afterKey -eq 0) `
+            ('visible windows: {0} -> {1}' -f $visible, $afterKey)
+
+        Send '^%+{F10}' 2000
+        Check 'Hotkeys' 'The show/hide hotkey brings them back' `
+            ([UiProbe]::Notes((Get-App).Id).Count -ge 1) 'the notes stayed hidden'
+    }
+
+    # --- a hotkey conflict names the combination and the app runs on
+    $ctx = Start-On "# Conflict`r`n`r`nbody`r`n" 'hotkey-conflict' $null `
+        @{ newNoteHotkey = 'Ctrl+Alt+Shift+F9'; showHideHotkey = 'Ctrl+Alt+Shift+F9' }
+    if ($ctx) {
+        # BOTH hotkeys set to one combination, so the second registration
+        # collides with the app's own first. Deterministic on purpose: leaning
+        # on some other application to be holding a combination makes the check
+        # a property of the machine rather than of the code.
+        Start-Sleep -Seconds 2
+        $log = if (Test-Path $LogFile) { Get-Content $LogFile -Raw } else { '' }
+
+        Check 'Hotkeys' 'A hotkey that cannot be registered is named in diagnostics.log' `
+            ($log -match 'Ctrl\+Alt\+Shift\+F9 is already in use') `
+            ('diagnostics.log: ' + ($log -replace "`r`n", ' / '))
+
+        Check 'Hotkeys' 'The app keeps running after a hotkey conflict' `
+            ($null -ne (Get-App)) 'the app exited over a hotkey it could not register'
+
+        # The conflict raises a balloon, and the Windows toast for it sits ON
+        # the notification area -- covering the overflow flyout and swallowing
+        # the next tray click. Wait it out rather than reporting a tray failure
+        # that is really a notification.
+        Start-Sleep -Seconds 12
+
+        if (Open-TrayMenu) {
+            $names = @(UiaMenuItemNames)
+
+            Check 'Hotkeys' 'The tray menu flags the unavailable hotkey' `
+                (@($names | Where-Object { $_ -like '*unavailable*' }).Count -gt 0) `
+                ('saw: ' + ($names -join ' | '))
+
+            Close-TrayMenu
+        }
+        else {
+            Check 'Hotkeys' 'The tray menu flags the unavailable hotkey' $false `
+                'the tray menu never opened; a notification toast may still have been covering it'
+        }
+    }
+
+    <#
+        Spec 8's notes-root failure, driven end to end.
+
+        Plan B showed a modal dialog and then SHUT DOWN, because it had neither
+        a tray to stay alive in nor a Settings window to point somewhere else
+        from. Spec 8 always asked for the other behaviour. This is the check
+        that the replacement really happened: the app stays up, Settings is on
+        screen with the banner, and pointing it at a writable folder recovers
+        the session WITHOUT a restart.
+
+        Its own launch rather than Start-On, because Start-On asserts that a
+        note window appeared -- and the whole point here is that none can.
+    #>
+    if (-not $Only -or 'settings-root-failure' -like "*$Only*") {
+        Stop-App
+        Remove-Item $LogFile -Force -ErrorAction SilentlyContinue
+        Remove-Item $IndexFile -Force -ErrorAction SilentlyContinue
+        Remove-Item $NotesRoot -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Path $NotesRoot -Force | Out-Null
+
+        # A drive that is not there. Directory.CreateDirectory throws
+        # DirectoryNotFoundException, which is an IOException, which is what
+        # App.OnStartup catches.
+        Write-Utf8 $Settings ((
+            [ordered]@{
+                notesRoot      = 'Z:\stickymd-nowhere'
+                newNoteHotkey  = 'Ctrl+Alt+Shift+F9'
+                showHideHotkey = 'Ctrl+Alt+Shift+F10'
+            } | ConvertTo-Json))
+
+        Start-Process $Exe | Out-Null
+        Start-Sleep -Seconds ($SettleSeconds + 3)
+
+        Check 'Degradation' 'A notes root that cannot be created leaves the app running' `
+            ($null -ne (Get-App)) 'the app exited instead of staying alive in the tray'
+
+        if (Get-App) {
+            $rootBox = UiaById 'NotesRootBox' 6000
+            Check 'Degradation' 'Settings opens by itself when the notes root cannot be created' `
+                ($null -ne $rootBox) 'no Settings window appeared'
+
+            $banner = UiaById 'BannerText' 3000
+            Check 'Degradation' 'The Settings banner says which folder failed and why' `
+                ($null -ne $banner -and $banner.Current.Name -match 'notes folder') `
+                ('banner: ' + $(if ($banner) { $banner.Current.Name } else { '(none)' }))
+
+            <#
+                New Note while the root is STILL unusable. This is the defect
+                Plan C introduced by keeping the app alive: CreateNewRecorded
+                begins with EnsureRootExists, which throws for a root that is
+                not there, and from a Click handler that reaches
+                DispatcherUnhandledException -- so one tray click closed the
+                whole app and took every other note's unsaved buffer with it.
+                Before Plan C it could not happen, because the app had already
+                exited during startup.
+            #>
+            # THROUGH THE HOTKEY, not the tray menu, and deliberately. The
+            # balloon this very failure raises puts a Windows toast over the
+            # notification area, so the overflow flyout will not open reliably
+            # at this moment -- which is a property of the notification, not of
+            # the tray. The hotkey reaches the same App.NewNote through the
+            # same guard, with nothing on screen in the way.
+            Send '^%+{F9}' 4000
+
+            Check 'Degradation' 'New Note on an unusable notes root does not take the app down' `
+                ($null -ne (Get-App)) `
+                'the app died on a New Note the notes root could not accept'
+
+            $log = if (Test-Path $LogFile) { Get-Content $LogFile -Raw } else { '' }
+            Check 'Degradation' 'A refused New Note is recorded rather than swallowed' `
+                ($log -match 'A new note could not be created') `
+                ('diagnostics.log: ' + ($log -replace "`r`n", ' / '))
+
+            if ($rootBox) {
+                # Point it somewhere writable and Save. No restart: the
+                # repository is repointed and the watcher restarted in place.
+                UiaClick $rootBox
+                Send '^a' 250
+                Send $NotesRoot 500
+
+                $save = UiaById 'SaveButton' 4000
+                if ($save) { UiaClick $save }
+                Start-Sleep -Seconds 3
+
+                $cfg = Get-Content $Settings -Raw | ConvertFrom-Json
+                Check 'Degradation' 'Choosing a writable folder in Settings is accepted and saved' `
+                    ($cfg.notesRoot -eq $NotesRoot) ('settings.json notesRoot: ' + $cfg.notesRoot)
+
+                # New Note is the proof the REPOSITORY moved, not just the file.
+                if (Open-TrayMenu) {
+                    $null = Invoke-TrayItem 'New Note'
+                    Start-Sleep -Seconds 4
+
+                    Check 'Degradation' 'The app recovers without a restart: New Note lands in the new folder' `
+                        (@(Get-ChildItem $NotesRoot -Filter *.md).Count -ge 1) `
+                        ('files in the new root: ' + @(Get-ChildItem $NotesRoot -Filter *.md).Count)
+                }
+                else {
+                    Check 'Degradation' 'The app recovers without a restart: New Note lands in the new folder' `
+                        $false 'the tray menu never opened'
+                }
+            }
+        }
+
+        Stop-App
     }
 
     # ================================================== The rename collision
@@ -1365,7 +1999,12 @@ try {
             }
         }
         Write-Utf8 $IndexFile (([ordered]@{ version = 1; notes = $notes } | ConvertTo-Json -Depth 6))
-        Write-Utf8 $Settings (([ordered]@{ notesRoot = $NotesRoot } | ConvertTo-Json))
+        Write-Utf8 $Settings ((
+            [ordered]@{
+                notesRoot      = $NotesRoot
+                newNoteHotkey  = 'Ctrl+Alt+Shift+F9'
+                showHideHotkey = 'Ctrl+Alt+Shift+F10'
+            } | ConvertTo-Json))
 
         Start-Process $Exe | Out-Null
         Start-Sleep -Seconds ($SettleSeconds + 3)

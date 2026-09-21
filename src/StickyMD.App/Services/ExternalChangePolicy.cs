@@ -25,16 +25,8 @@ public enum ExternalChangeAction
 public static class ExternalChangePolicy
 {
     public static ExternalChangeAction Decide(
-        bool bufferIsDirty, string? bufferHash, string diskHash)
-    {
-        if (!bufferIsDirty) return ExternalChangeAction.Reload;
-
-        // Not knowing is not the same as matching. Asking costs a click;
-        // guessing costs the text.
-        if (bufferHash is null) return ExternalChangeAction.Ask;
-
-        return string.Equals(bufferHash, diskHash, StringComparison.OrdinalIgnoreCase)
+        bool bufferIsDirty, string bufferHash, string diskHash)
+        => !bufferIsDirty || string.Equals(bufferHash, diskHash, StringComparison.OrdinalIgnoreCase)
             ? ExternalChangeAction.Reload
             : ExternalChangeAction.Ask;
-    }
 }

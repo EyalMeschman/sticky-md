@@ -1,5 +1,7 @@
 using System.IO;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -7,6 +9,7 @@ using System.Windows.Media.Animation;
 using Microsoft.Web.WebView2.Wpf;
 using StickyMD.App.Interop;
 using StickyMD.App.Services;
+using StickyMD.Core.Diagnostics;
 using StickyMD.Core.Editing;
 using StickyMD.Core.Geometry;
 using StickyMD.Core.Markdown;
@@ -29,6 +32,16 @@ public interface INoteWindow : IDisposable
     /// <summary>Physical screen pixels, read straight from the OS.</summary>
     PixelRect Bounds { get; }
 
+    /// <summary>
+    /// Drawn right now. Satisfied for free by <c>Window.IsVisible</c>.
+    /// </summary>
+    /// <remarks>
+    /// The tray's left-click has to choose between Show All and Hide All, and
+    /// the honest input for that is what is on the screen -- not a flag the
+    /// manager keeps, which <c>✕</c> and a new note would both put out of step.
+    /// </remarks>
+    bool IsVisible { get; }
+
     void ShowNote(bool activate);
     void HideNote();
     void FocusNote();
@@ -40,7 +53,19 @@ public interface INoteWindow : IDisposable
     /// </summary>
     void EnterEditMode();
 
-    void ApplyState(NoteState state, NoteTheme theme);
+    /// <summary>
+    /// Everything this window should now reflect: geometry, colour, opacity,
+    /// pin, theme, and the GLOBAL remote-image setting.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="allowRemoteImages"/> is here rather than on a method of
+    /// its own because of spec §6's CSP rule: a meta-tag CSP is fixed at parse
+    /// time, so changing it means re-navigating the shell. Two entry points
+    /// each deciding whether the shell is stale would re-navigate twice for one
+    /// Settings save, and the note flashes each time. One method, one staleness
+    /// check, one re-navigation.
+    /// </remarks>
+    void ApplyState(NoteState state, NoteTheme theme, bool allowRemoteImages);
 
     /// <summary>An external edit arrived and the buffer was clean.</summary>
     void ApplyExternalContent(NoteContent content);
@@ -112,7 +137,6 @@ public sealed partial class NoteWindow : Window, INoteWindow
     private WebViewHost _web;
     private NoteState _state;
     private NoteTheme _theme;
-    private StickyMD.Core.Theming.ThemeMode _resolvedMode = StickyMD.Core.Theming.ThemeMode.Light;
     private string _buffer = string.Empty;
     private bool _webReady;
     private bool _disposed;
@@ -148,18 +172,38 @@ public sealed partial class NoteWindow : Window, INoteWindow
     /// <see cref="ApplyState"/> compares against these before re-navigating.
     /// Windows raises <c>UserPreferenceChanged</c> for accent colour, wallpaper
     /// and a broad slice of <c>WM_SETTINGCHANGE</c> traffic, not only for
-    /// light/dark, and every one of those used to reach here and rebuild the
-    /// page: every note on the desktop flashes and re-renders on an accent
+    /// light/dark, and without this comparison every one of those would
+    /// rebuild the page -- every note on the desktop flashing on an accent
     /// colour change. Null until the first shell is built.
     /// </remarks>
     private NoteTheme? _shellTheme;
     private bool _shellAllowRemoteImages;
+    private int _shellFontSizePx;
 
-    // Default false preserves this task's behaviour exactly. Task 12 flips
-    // this for the per-note "Load remote images" bar; declaring and reading
-    // it from the start means that task changes behaviour rather than
-    // introducing a field.
-    private bool _allowRemoteImages = false;
+    /// <summary>
+    /// The per-note "Load remote images" bar was clicked, this session.
+    /// </summary>
+    /// <remarks>
+    /// Spec §7: per note, per session, and deliberately
+    /// UNPERSISTED. Notes sync, so a one-off decision to trust one note must
+    /// not become a standing one.
+    /// </remarks>
+    private bool _noteAllowsRemoteImages;
+
+    /// <summary>Settings' <c>allowRemoteImages</c>, as it stands right now.</summary>
+    private bool _globalAllowsRemoteImages;
+
+    /// <summary>
+    /// What the renderer and the CSP actually use.
+    /// </summary>
+    /// <remarks>
+    /// OR, not "global wins". Turning the global setting OFF must not revoke
+    /// an opt-in the user already made for THIS note in THIS session -- they
+    /// looked at the bar and said yes, and having the images vanish again
+    /// because an unrelated Settings save happened afterwards would read as a
+    /// bug. Turning it on covers every note, which is the point of a global.
+    /// </remarks>
+    private bool AllowRemoteImages => _globalAllowsRemoteImages || _noteAllowsRemoteImages;
 
     /// <summary>
     /// Spec §8. Markdig plus a DOM swap on a multi-megabyte document freezes
@@ -170,13 +214,25 @@ public sealed partial class NoteWindow : Window, INoteWindow
     private bool ExceedsPreviewLimit
         => System.Text.Encoding.UTF8.GetByteCount(_buffer) > PreviewSizeLimitBytes;
 
-    public NoteWindow(string canonicalPath, NoteState state, NoteTheme theme, IWriteLedger ledger)
+    public NoteWindow(
+        string canonicalPath,
+        NoteState state,
+        NoteTheme theme,
+        IWriteLedger ledger,
+        bool allowRemoteImages)
     {
         InitializeComponent();
 
         NotePath = canonicalPath;
         _state = state;
         _theme = theme;
+
+        // BEFORE the first shell is built. Passed in rather than applied
+        // afterwards through ApplyState, because the first shell's CSP is
+        // built during OnSourceInitialized -- a note born under a global
+        // opt-in would otherwise navigate once with remote images blocked and
+        // immediately re-navigate to allow them.
+        _globalAllowsRemoteImages = allowRemoteImages;
 
         _bars = new InlineBarHost(BarStack);
         _web = new WebViewHost(canonicalPath);
@@ -192,9 +248,8 @@ public sealed partial class NoteWindow : Window, INoteWindow
 
         // Saved can fire off the UI thread: FlushAsync awaits with
         // ConfigureAwait(false) throughout, so it has no reason to resume on
-        // the dispatcher. Marshal here so OnSaved -- extended in Task 12 to
-        // show bars -- can stay UI-thread-safe without every caller having to
-        // know that.
+        // the dispatcher. Marshal here so OnSaved, which shows bars, can stay
+        // UI-thread-safe without every caller having to know that.
         //
         // MUST BE BeginInvoke, NEVER Invoke. SaveNow() blocks the UI thread
         // synchronously on FlushAsync().GetAwaiter().GetResult(). If FlushAsync
@@ -237,7 +292,7 @@ public sealed partial class NoteWindow : Window, INoteWindow
     public string NotePath { get; private set; }
 
     public PixelRect Bounds => _handle == IntPtr.Zero
-        ? new PixelRect(_state.X, _state.Y, _state.W, _state.H)
+        ? _state.Bounds
         : WindowGeometry.GetBounds(_handle);
 
     public event Action<string>? CloseRequested;
@@ -250,11 +305,6 @@ public sealed partial class NoteWindow : Window, INoteWindow
     // INoteWindow's, with a different signature, and deliberately shadows it
     // -- nothing in this class means to observe the base Window's version.
     public new event Action<string, NoteState>? StateChanged;
-
-    // TEMPORARY (Plan B only). Removed in Plan C, which gives the tray menu
-    // New Note. Not on INoteWindow -- WindowManagerTests drives the manager
-    // through fakes and has no reason to know about this key.
-    public event Action? NewNoteRequested;
 
     private IntPtr _handle = IntPtr.Zero;
 
@@ -273,8 +323,7 @@ public sealed partial class NoteWindow : Window, INoteWindow
         //   - text selection inside a note becomes impossible
         //
         // There is no exception, no warning, and no crash. The note simply
-        // stops responding to clicks. Spike 0 initially misattributed this to
-        // the composition control.
+        // stops responding to clicks.
         // ============================================================
         Header.MouseLeftButtonDown += (_, e) =>
         {
@@ -291,19 +340,11 @@ public sealed partial class NoteWindow : Window, INoteWindow
         Header.MouseLeave += (_, _) => FadeHeaderButtons(RestingGlyphOpacity);
 
         CloseButton.Click += (_, _) => CloseRequested?.Invoke(NotePath);
-
-        PinButton.Click += (_, _) =>
-        {
-            _state = _state with { AlwaysOnTop = !_state.AlwaysOnTop };
-            Topmost = _state.AlwaysOnTop;
-            StateChanged?.Invoke(NotePath, CurrentState());
-        };
-
+        PinButton.Click += (_, _) => TogglePin();
         MoreButton.Click += (_, _) => ShowMoreMenu(MoreButton);
 
-        // The colour glyph opens COLOURS, not the whole menu. Both buttons
-        // called ShowMoreMenu until the app was first run by hand, so the two
-        // glyphs did exactly the same thing and the colour one was decoration.
+        // The colour glyph opens COLOURS, not the whole menu: two glyphs that
+        // open the same menu make one of them decoration.
         ColorButton.Click += (_, _) => ShowColourMenu(ColorButton);
     }
 
@@ -324,44 +365,54 @@ public sealed partial class NoteWindow : Window, INoteWindow
     /// The spec's menu, verbatim: Rename…, Color ▸, Opacity ▸, Always on Top ☑,
     /// separator, Delete. Every entry maps to a v1 feature.
     /// </summary>
-    private void ShowMoreMenu(System.Windows.Controls.Button anchor)
+    private void ShowMoreMenu(Button anchor)
     {
-        var menu = new System.Windows.Controls.ContextMenu();
+        var menu = new ContextMenu();
 
-        var rename = new System.Windows.Controls.MenuItem { Header = "Rename…" };
+        var rename = new MenuItem { Header = "Rename…" };
         rename.Click += (_, _) => PromptRename();
         menu.Items.Add(rename);
 
-        var colours = new System.Windows.Controls.MenuItem { Header = "Color" };
+        var colours = new MenuItem { Header = "Color" };
         colours.Items.Add(SwatchRowItem(() => menu.IsOpen = false));
         menu.Items.Add(colours);
 
-        var opacity = new System.Windows.Controls.MenuItem { Header = "Opacity" };
-        opacity.Items.Add(OpacitySliderItem());
+        // Opacity floor is 30, ABOVE StateValidator.MinOpacity's 0.20, for
+        // the same reason that floor exists: below roughly 20% a note is
+        // invisible and cannot be found with the mouse to be fixed, so a
+        // slider that reached zero would let the user build a state they
+        // cannot get out of.
+        var opacity = new MenuItem { Header = "Opacity" };
+        opacity.Items.Add(SliderItem(
+            30, 100, tick: 5, _state.Opacity * 100,
+            v => $"{v:0}%", v => ApplyOpacity(v / 100.0)));
         menu.Items.Add(opacity);
 
-        var pin = new System.Windows.Controls.MenuItem
+        // Bounded by StateValidator's own limits, so the slider cannot produce
+        // a value the validator would then correct on the next load.
+        var textSize = new MenuItem { Header = "Text size" };
+        textSize.Items.Add(SliderItem(
+            StateValidator.MinFontSizePx, StateValidator.MaxFontSizePx, tick: 1, _state.FontSizePx,
+            v => $"{v:0}px", v => ApplyFontSize((int)Math.Round(v))));
+        menu.Items.Add(textSize);
+
+        var pin = new MenuItem
         {
             Header = "Always on Top",
             IsCheckable = true,
             IsChecked = _state.AlwaysOnTop,
         };
-        pin.Click += (_, _) =>
-        {
-            _state = _state with { AlwaysOnTop = !_state.AlwaysOnTop };
-            Topmost = _state.AlwaysOnTop;
-            StateChanged?.Invoke(NotePath, CurrentState());
-        };
+        pin.Click += (_, _) => TogglePin();
         menu.Items.Add(pin);
 
-        menu.Items.Add(new System.Windows.Controls.Separator());
+        menu.Items.Add(new Separator());
 
-        var delete = new System.Windows.Controls.MenuItem { Header = "Delete" };
+        var delete = new MenuItem { Header = "Delete" };
         delete.Click += (_, _) => ConfirmDelete();
         menu.Items.Add(delete);
 
         menu.PlacementTarget = anchor;
-        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        menu.Placement = PlacementMode.Bottom;
         menu.IsOpen = true;
     }
 
@@ -369,13 +420,13 @@ public sealed partial class NoteWindow : Window, INoteWindow
     /// Colours only, hung off the colour glyph. Same swatch row the more
     /// menu's Color submenu uses, so the two can never drift apart.
     /// </summary>
-    private void ShowColourMenu(System.Windows.Controls.Button anchor)
+    private void ShowColourMenu(Button anchor)
     {
-        var menu = new System.Windows.Controls.ContextMenu();
+        var menu = new ContextMenu();
         menu.Items.Add(SwatchRowItem(() => menu.IsOpen = false));
 
         menu.PlacementTarget = anchor;
-        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        menu.Placement = PlacementMode.Bottom;
         menu.IsOpen = true;
     }
 
@@ -383,9 +434,8 @@ public sealed partial class NoteWindow : Window, INoteWindow
     /// The seven palette colours as a row of clickable swatches.
     /// </summary>
     /// <remarks>
-    /// They were a list of colour NAMES until the app was first run by hand.
-    /// A text list is the wrong control for choosing a colour -- you cannot
-    /// see what you are picking -- and it read as a bug rather than a design.
+    /// Swatches rather than colour NAMES: a text list is the wrong control for
+    /// choosing a colour, because you cannot see what you are picking.
     ///
     /// Each swatch paints the note's CONTENT background, not its chrome: that
     /// is the large surface the user will actually be looking at. Both come
@@ -397,29 +447,28 @@ public sealed partial class NoteWindow : Window, INoteWindow
     /// not by the MenuItem -- without it WPF closes the menu on mouse-down and
     /// the Border never sees the mouse-up.
     /// </remarks>
-    private System.Windows.Controls.MenuItem SwatchRowItem(Action close)
+    private MenuItem SwatchRowItem(Action close)
     {
-        var row = new System.Windows.Controls.StackPanel
+        var row = new StackPanel
         {
-            Orientation = System.Windows.Controls.Orientation.Horizontal,
+            Orientation = Orientation.Horizontal,
             Margin = new Thickness(2),
         };
 
         foreach (var colour in NotePalette.All)
         {
-            var theme = NotePalette.Get(colour, _resolvedMode);
+            var theme = NotePalette.Get(colour, _theme.Mode);
             var selected = colour == _state.Color;
 
-            var swatch = new System.Windows.Controls.Border
+            var swatch = new Border
             {
                 Width = 22,
                 Height = 22,
                 Margin = new Thickness(2),
                 CornerRadius = new CornerRadius(4),
-                Background = new SolidColorBrush(Parse(theme.ContentBg)),
+                Background = Hex.Brush(theme.ContentBg),
                 BorderThickness = new Thickness(selected ? 2 : 1),
-                BorderBrush = new SolidColorBrush(
-                    Parse(selected ? theme.Accent : theme.Border)),
+                BorderBrush = Hex.Brush(selected ? theme.Accent : theme.Border),
                 Cursor = Cursors.Hand,
                 ToolTip = colour.ToString(),
             };
@@ -436,7 +485,7 @@ public sealed partial class NoteWindow : Window, INoteWindow
             row.Children.Add(swatch);
         }
 
-        return new System.Windows.Controls.MenuItem
+        return new MenuItem
         {
             Header = row,
             StaysOpenOnClick = true,
@@ -444,72 +493,96 @@ public sealed partial class NoteWindow : Window, INoteWindow
     }
 
     /// <summary>
-    /// Opacity as a slider rather than five fixed steps.
+    /// A slider with a live readout, as a menu item.
     /// </summary>
     /// <remarks>
-    /// The floor is 30, ABOVE StateValidator.MinOpacity's 0.20, for the same
-    /// reason that floor exists: below roughly 20% a note is invisible and
-    /// cannot be found with the mouse to be fixed, so a slider that reached
-    /// zero would let the user build a state they cannot get out of.
-    ///
-    /// Applied live on ValueChanged, because the whole point of a slider is
-    /// seeing the result while you drag. Window.Opacity is cheap to set;
-    /// StateChanged goes to the index each time, which is one small JSON write
-    /// per drag notch and has not been worth debouncing.
+    /// Applied on ValueChanged, because seeing the result while you drag is the
+    /// point of a slider. For opacity that is a cheap Window.Opacity set plus
+    /// one small index write per notch; for text size each notch re-navigates
+    /// the shell, which was measured as fine for a range this small. If it
+    /// ever is not, debounce here rather than moving the size out of the
+    /// stylesheet.
     /// </remarks>
-    private System.Windows.Controls.MenuItem OpacitySliderItem()
+    private static MenuItem SliderItem(
+        double min, double max, double tick, double value,
+        Func<double, string> label, Action<double> apply)
     {
-        var readout = new System.Windows.Controls.TextBlock
+        var readout = new TextBlock
         {
             Width = 34,
             VerticalAlignment = VerticalAlignment.Center,
-            Text = $"{_state.Opacity * 100:0}%",
+            Text = label(value),
         };
 
-        var slider = new System.Windows.Controls.Slider
+        var slider = new Slider
         {
-            Minimum = 30,
-            Maximum = 100,
-            Value = Math.Clamp(_state.Opacity * 100, 30, 100),
+            Minimum = min,
+            Maximum = max,
+            Value = Math.Clamp(value, min, max),
             Width = 140,
-            TickFrequency = 5,
+            TickFrequency = tick,
             IsSnapToTickEnabled = true,
             VerticalAlignment = VerticalAlignment.Center,
         };
 
         slider.ValueChanged += (_, e) =>
         {
-            readout.Text = $"{e.NewValue:0}%";
-            ApplyOpacity(e.NewValue / 100.0);
+            readout.Text = label(e.NewValue);
+            apply(e.NewValue);
         };
 
-        var row = new System.Windows.Controls.StackPanel
+        var row = new StackPanel
         {
-            Orientation = System.Windows.Controls.Orientation.Horizontal,
+            Orientation = Orientation.Horizontal,
             Margin = new Thickness(6, 2, 6, 2),
         };
 
         row.Children.Add(slider);
         row.Children.Add(readout);
 
-        return new System.Windows.Controls.MenuItem
-        {
-            Header = row,
-            StaysOpenOnClick = true,
-        };
+        return new MenuItem { Header = row, StaysOpenOnClick = true };
+    }
+
+    private void TogglePin()
+    {
+        _state = _state with { AlwaysOnTop = !_state.AlwaysOnTop };
+        Topmost = _state.AlwaysOnTop;
+        StateChanged?.Invoke(NotePath, CurrentState());
     }
 
     private void ApplyColour(NoteColor colour)
     {
         _state = _state with { Color = colour };
 
-        var theme = NotePalette.Get(colour, _resolvedMode);
+        var theme = NotePalette.Get(colour, _theme.Mode);
         ApplyTheme(theme);
 
         // The WebView needs a fresh shell for the new CSS variables and a new
         // opaque backdrop, or the note's chrome and its content disagree about
         // what this colour is. Guarded like ApplyState's identical call: the
         // shell may not have finished its first InitializeAsync yet.
+        if (_webReady) _ = ReloadShellAsync();
+
+        StateChanged?.Invoke(NotePath, CurrentState());
+    }
+
+    /// <summary>
+    /// The note's text size changed, from the more menu's Text size slider.
+    /// </summary>
+    /// <remarks>
+    /// Needs a fresh shell rather than a re-render: the size is baked into the
+    /// stylesheet of the page the WebView navigated to, and every heading and
+    /// code size is an em multiple of it. Guarded on _webReady like
+    /// ApplyColour's identical call, because the first InitializeAsync may not
+    /// have finished yet.
+    /// </remarks>
+    private void ApplyFontSize(int px)
+    {
+        if (px == _state.FontSizePx) return;
+
+        _state = _state with { FontSizePx = px };
+        Editor.FontSize = px;
+
         if (_webReady) _ = ReloadShellAsync();
 
         StateChanged?.Invoke(NotePath, CurrentState());
@@ -551,12 +624,7 @@ public sealed partial class NoteWindow : Window, INoteWindow
         // yet. Keeping the last known geometry beats persisting an empty one.
         if (bounds.Width <= 0 || bounds.Height <= 0) return _state;
 
-        _state = _state with
-        {
-            X = bounds.X, Y = bounds.Y, W = bounds.Width, H = bounds.Height,
-        };
-
-        return _state;
+        return _state = _state.WithBounds(bounds);
     }
 
     private void PromptRename()
@@ -597,12 +665,11 @@ public sealed partial class NoteWindow : Window, INoteWindow
     private void ApplyTheme(NoteTheme theme)
     {
         _theme = theme;
-        _resolvedMode = theme.Mode;
 
-        Root.Background = new SolidColorBrush(Parse(theme.ContentBg));
-        Root.BorderBrush = new SolidColorBrush(Parse(theme.Border));
-        Header.Background = new SolidColorBrush(Parse(theme.ChromeBg));
-        TitleText.Foreground = new SolidColorBrush(Parse(theme.ChromeFg));
+        Root.Background = Hex.Brush(theme.ContentBg);
+        Root.BorderBrush = Hex.Brush(theme.Border);
+        Header.Background = Hex.Brush(theme.ChromeBg);
+        TitleText.Foreground = Hex.Brush(theme.ChromeFg);
 
         // The header glyphs are styled in App.xaml and reach these two through
         // DynamicResource, because a Style in application scope cannot see a
@@ -614,20 +681,21 @@ public sealed partial class NoteWindow : Window, INoteWindow
         // wash. Deriving the wash from the foreground rather than picking
         // black-or-white by mode is what makes it correct for Charcoal/Light,
         // whose chrome is dark even though the mode says light.
-        var glyph = Parse(theme.ChromeFg);
+        var glyph = Hex.Color(theme.ChromeFg);
 
         Resources["HeaderGlyphFg"] = new SolidColorBrush(glyph);
         Resources["HeaderGlyphHover"] = new SolidColorBrush(
             Color.FromArgb(0x2A, glyph.R, glyph.G, glyph.B));
-        Editor.Background = new SolidColorBrush(Parse(theme.ContentBg));
-        Editor.Foreground = new SolidColorBrush(Parse(theme.ContentFg));
-        Editor.CaretBrush = new SolidColorBrush(Parse(theme.Accent));
+        // The editor's size is set from the note's state, NOT from XAML's
+        // FontSize="14". Preview and edit mode showing text at different sizes
+        // makes Ctrl+E look like it reformatted the note.
+        Editor.FontSize = _state.FontSizePx;
+        Editor.Background = Hex.Brush(theme.ContentBg);
+        Editor.Foreground = Hex.Brush(theme.ContentFg);
+        Editor.CaretBrush = Hex.Brush(theme.Accent);
 
         _bars.ApplyTheme(theme);
     }
-
-    private static Color Parse(string hex)
-        => (Color)ColorConverter.ConvertFromString(hex)!;
 
     private async void OnSourceInitialized(object? sender, EventArgs e)
     {
@@ -644,7 +712,7 @@ public sealed partial class NoteWindow : Window, INoteWindow
         // DPI, which is the bug that puts a note saved at 150% in the wrong
         // place at 100%.
         WindowGeometry.SetBounds(
-            _handle, new PixelRect(_state.X, _state.Y, _state.W, _state.H));
+            _handle, _state.Bounds);
 
         Topmost = _state.AlwaysOnTop;
         Opacity = _state.Opacity;
@@ -668,8 +736,9 @@ public sealed partial class NoteWindow : Window, INoteWindow
             await _web.InitializeAsync(
                 directory,
                 _theme,
-                allowRemoteImages: _allowRemoteImages,
-                backdrop: System.Drawing.ColorTranslator.FromHtml(_theme.ContentBg))
+                allowRemoteImages: AllowRemoteImages,
+                backdrop: Hex.Gdi(_theme.ContentBg),
+                fontSizePx: _state.FontSizePx)
                 .ConfigureAwait(true);
 
             RecordShellInputs();
@@ -692,7 +761,7 @@ public sealed partial class NoteWindow : Window, INoteWindow
             // of, and the cost of missing one is process death. The recreate
             // path already has FellBackToPlainText; this gives the initial
             // path the same route.
-            Core.Diagnostics.DiagnosticsLog.Write(
+            DiagnosticsLog.Write(
                 AppPaths.DiagnosticsFile,
                 $"{NotePath}: the note viewer could not start -- {ex}");
 
@@ -730,7 +799,7 @@ public sealed partial class NoteWindow : Window, INoteWindow
     /// <summary>The shell never reported "ready" within the guard window.</summary>
     private void ShowViewerStalled()
     {
-        Core.Diagnostics.DiagnosticsLog.Write(
+        DiagnosticsLog.Write(
             AppPaths.DiagnosticsFile,
             $"{NotePath}: the note viewer did not finish loading within {_viewerStall.Interval.TotalSeconds:0}s.");
 
@@ -782,9 +851,9 @@ public sealed partial class NoteWindow : Window, INoteWindow
         // the host's remembered render -- so if it never reaches "ready",
         // _pendingRender is never posted and Rendered never fires. The timer
         // was stopped by the first successful render, possibly hours ago, so
-        // without this the note is blank with no bar and no timeout: C2's
-        // exact symptom, one failure deeper. Restart rather than Start, for
-        // the same reason ReloadShellAsync does.
+        // without this the note is blank with no bar and no timeout -- the
+        // viewer-stalled failure, one level deeper. Restart rather than Start,
+        // for the same reason ReloadShellAsync does.
         _viewerStall.Stop();
         _viewerStall.Start();
     }
@@ -826,7 +895,7 @@ public sealed partial class NoteWindow : Window, INoteWindow
             _buffer = string.Empty;
             _loadFailed = true;
 
-            Core.Diagnostics.DiagnosticsLog.Write(
+            DiagnosticsLog.Write(
                 AppPaths.DiagnosticsFile, $"{NotePath}: could not be read -- {ex.Message}");
 
             TitleText.Text = NoteTitleResolver.Resolve(_buffer, NotePath);
@@ -897,9 +966,9 @@ public sealed partial class NoteWindow : Window, INoteWindow
         _bars.Dismiss("size-limit");
 
         var result = _renderer.Render(
-            _buffer, new StickyMD.Core.Markdown.RenderOptions(_allowRemoteImages));
+            _buffer, new Core.Markdown.RenderOptions(AllowRemoteImages));
 
-        if (result.BlockedRemoteImages > 0 && !_allowRemoteImages)
+        if (result.BlockedRemoteImages > 0 && !AllowRemoteImages)
             ShowRemoteImagesAvailable(result.BlockedRemoteImages);
         else
             _bars.Dismiss("remote-images");
@@ -917,7 +986,7 @@ public sealed partial class NoteWindow : Window, INoteWindow
             // says. The page cancelled the default action, so it is currently
             // showing the pre-click state -- but a re-render is what makes
             // that true rather than coincidental.
-            Core.Diagnostics.DiagnosticsLog.Write(
+            DiagnosticsLog.Write(
                 AppPaths.DiagnosticsFile,
                 $"{NotePath}: checkbox click refused -- {decision.Reason}");
 
@@ -957,7 +1026,7 @@ public sealed partial class NoteWindow : Window, INoteWindow
                 break;
 
             default:
-                Core.Diagnostics.DiagnosticsLog.Write(
+                DiagnosticsLog.Write(
                     AppPaths.DiagnosticsFile, $"{NotePath}: {decision.Reason}");
                 break;
         }
@@ -978,7 +1047,7 @@ public sealed partial class NoteWindow : Window, INoteWindow
             _bars.Show(new InlineBarRequest(
                 "link-failed", "That link could not be opened."));
 
-            Core.Diagnostics.DiagnosticsLog.Write(
+            DiagnosticsLog.Write(
                 AppPaths.DiagnosticsFile,
                 $"{NotePath}: could not open '{url}' -- {ex.Message}");
         }
@@ -1091,11 +1160,13 @@ public sealed partial class NoteWindow : Window, INoteWindow
             OnPrimary: () =>
             {
                 // Per SESSION and per NOTE, deliberately. The global opt-in
-                // lives in Settings (Plan C); this one is not persisted, so
-                // reopening the note blocks them again. Notes sync, and a
-                // one-off decision to trust one note must not become a
-                // standing one.
-                _allowRemoteImages = true;
+                // is Settings' allowRemoteImages, which arrives through
+                // ApplyState; THIS one is not persisted, so reopening the note
+                // blocks them again. Notes sync, and a one-off decision to
+                // trust one note must not become a standing one -- which is
+                // also why the two are separate fields OR'd together rather
+                // than one flag the global can overwrite.
+                _noteAllowsRemoteImages = true;
                 _ = ReloadShellAsync();
             }));
 
@@ -1114,8 +1185,9 @@ public sealed partial class NoteWindow : Window, INoteWindow
         // time. Content updates never do this.
         await _web.SetThemeAsync(
             _theme,
-            _allowRemoteImages,
-            System.Drawing.ColorTranslator.FromHtml(_theme.ContentBg))
+            AllowRemoteImages,
+            Hex.Gdi(_theme.ContentBg),
+            _state.FontSizePx)
             .ConfigureAwait(true);
 
         RecordShellInputs();
@@ -1137,14 +1209,12 @@ public sealed partial class NoteWindow : Window, INoteWindow
     private void RecordShellInputs()
     {
         _shellTheme = _theme;
-        _shellAllowRemoteImages = _allowRemoteImages;
+        _shellAllowRemoteImages = AllowRemoteImages;
+        _shellFontSizePx = _state.FontSizePx;
     }
 
-    /// <summary>INoteWindow's seam onto <see cref="ShowRecoveredContent"/>.</summary>
-    public void ShowRecovered(RecoveryEnvelope envelope) => ShowRecoveredContent(envelope);
-
     /// <summary>A recovery snapshot survived to this startup.</summary>
-    public void ShowRecoveredContent(RecoveryEnvelope envelope)
+    public void ShowRecovered(RecoveryEnvelope envelope)
         => _bars.Show(new InlineBarRequest(
             "recovered",
             "Unsaved changes were recovered.",
@@ -1219,7 +1289,7 @@ public sealed partial class NoteWindow : Window, INoteWindow
         Editor.CaretIndex = Math.Min(caret, Editor.Text.Length);
     }
 
-    private void OnEditorTextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    private void OnEditorTextChanged(object sender, TextChangedEventArgs e)
     {
         if (!_editing) return;
 
@@ -1253,29 +1323,6 @@ public sealed partial class NoteWindow : Window, INoteWindow
         {
             _ = ExitEditModeAsync();
             e.Handled = true;
-        }
-
-        // TEMPORARY (Plan B only). Removed in Plan C, which gives the tray
-        // menu New Note and Exit. Without an exit path the shutdown behaviour
-        // -- the one that must NOT clear isOpen -- cannot be tested by hand at
-        // all, and Task Manager kills the process before OnExit runs.
-        if ((Keyboard.Modifiers
-                & (ModifierKeys.Control | ModifierKeys.Shift | ModifierKeys.Alt))
-            == (ModifierKeys.Control | ModifierKeys.Shift | ModifierKeys.Alt))
-        {
-            if (e.Key == Key.Q)
-            {
-                Application.Current.Shutdown();
-                e.Handled = true;
-                return;
-            }
-
-            if (e.Key == Key.N)
-            {
-                NewNoteRequested?.Invoke();
-                e.Handled = true;
-                return;
-            }
         }
     }
 
@@ -1379,7 +1426,7 @@ public sealed partial class NoteWindow : Window, INoteWindow
             // This window no longer owns NotePath: a rename landed on it and
             // another window has the file now. Writing here would replace the
             // renamed-in file with this one's text. Recorded, never silent.
-            Core.Diagnostics.DiagnosticsLog.Write(
+            DiagnosticsLog.Write(
                 AppPaths.DiagnosticsFile,
                 $"{NotePath}: a save was refused -- this note was displaced by a rename "
                     + "and no longer owns the path. Its text is intact behind the bar.");
@@ -1397,7 +1444,7 @@ public sealed partial class NoteWindow : Window, INoteWindow
             // forbids.
             if (_saves.IsDirty)
             {
-                Core.Diagnostics.DiagnosticsLog.Write(
+                DiagnosticsLog.Write(
                     AppPaths.DiagnosticsFile,
                     $"{NotePath}: a save was refused -- the file has never been read "
                         + "successfully, so writing would replace it with less than it has.");
@@ -1434,24 +1481,30 @@ public sealed partial class NoteWindow : Window, INoteWindow
         Activate();
     }
 
-    public void ApplyState(NoteState state, NoteTheme theme)
+    public void ApplyState(NoteState state, NoteTheme theme, bool allowRemoteImages)
     {
         _state = state;
+        _globalAllowsRemoteImages = allowRemoteImages;
 
         Topmost = state.AlwaysOnTop;
         Opacity = state.Opacity;
 
         // Compared BEFORE ApplyTheme overwrites _theme. NoteTheme is a record,
-        // so this compares all eight colours plus the resolved mode.
+        // so this compares all eight colours plus the resolved mode. The
+        // remote-image half is what makes a Settings change to
+        // allowRemoteImages re-navigate the shell, which spec §6's per-shell
+        // CSP requires -- re-rendering the content alone would keep the old
+        // img-src and go on blocking.
         var shellIsStale = !theme.Equals(_shellTheme)
-            || _allowRemoteImages != _shellAllowRemoteImages;
+            || AllowRemoteImages != _shellAllowRemoteImages
+            || state.FontSizePx != _shellFontSizePx;
 
         ApplyTheme(theme);
 
         if (_handle != IntPtr.Zero)
         {
             WindowGeometry.SetBounds(
-                _handle, new PixelRect(state.X, state.Y, state.W, state.H));
+                _handle, state.Bounds);
         }
 
         // Only when the shell's own inputs actually moved. ApplyState also
@@ -1563,8 +1616,9 @@ public sealed partial class NoteWindow : Window, INoteWindow
         // _savingStopped. Nothing should be able to mark this note dirty while
         // either flag is set, but the shutdown flush must not be the one write
         // path that assumes so. A displaced window is out of WindowManager's
-        // map today and so never reaches here; Plan C wants to make such a
-        // window closable, which would put it back in reach.
+        // map and so never reaches here today. Making such a window closable
+        // would put it back in reach; that is still deferred, and this gate is
+        // what makes deferring it safe.
         if (_loadFailed || _savingStopped) return;
 
         // Synchronous on purpose: called during shutdown and window disposal,

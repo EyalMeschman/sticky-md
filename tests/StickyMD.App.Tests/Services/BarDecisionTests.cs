@@ -43,14 +43,4 @@ public class BarDecisionTests
             bufferIsDirty: true, bufferHash: "abc123", diskHash: "ABC123")
             .ShouldBe(ExternalChangeAction.Reload);
     }
-
-    [Fact]
-    public void A_dirty_buffer_with_an_unknown_hash_asks()
-    {
-        // Not knowing is not the same as matching. Asking risks a click;
-        // guessing risks the text.
-        ExternalChangePolicy.Decide(
-            bufferIsDirty: true, bufferHash: null, diskHash: "BBB")
-            .ShouldBe(ExternalChangeAction.Ask);
-    }
 }

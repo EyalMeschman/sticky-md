@@ -1,3 +1,4 @@
+using StickyMD.Core.Input;
 using StickyMD.Core.Notes;
 using StickyMD.Core.Theming;
 
@@ -43,6 +44,16 @@ public static class StateValidator
 
     public const double MaxOpacity = 1.0;
 
+    /// <summary>
+    /// Below this the text is unreadable, which is a note the user cannot use.
+    /// </summary>
+    public const int MinFontSizePx = 9;
+
+    /// <summary>
+    /// Above this a default-sized note fits about two words per line.
+    /// </summary>
+    public const int MaxFontSizePx = 40;
+
     public static NoteState ValidateNote(
         NoteState raw,
         AppSettings defaults,
@@ -83,6 +94,23 @@ public static class StateValidator
 
         var monitor = string.IsNullOrWhiteSpace(raw.Monitor) ? null : raw.Monitor;
 
+        var fontSize = raw.FontSizePx;
+        if (fontSize <= 0)
+        {
+            // SILENT, and deliberately. Zero is what a note written before
+            // this field existed deserialises to, so this branch is an upgrade
+            // rather than a correction -- reporting it would write one line per
+            // note into diagnostics.log on the first run after an update, and
+            // train the reader to skim past the corrections that matter.
+            fontSize = defaults.DefaultFontSizePx;
+        }
+        else if (fontSize < MinFontSizePx || fontSize > MaxFontSizePx)
+        {
+            var clamped = Math.Clamp(fontSize, MinFontSizePx, MaxFontSizePx);
+            Report("fontSizePx", $"{fontSize} is outside {MinFontSizePx}-{MaxFontSizePx}; used {clamped}.");
+            fontSize = clamped;
+        }
+
         var lastOpened = ToUtc(raw.LastOpenedUtc);
         if (lastOpened > nowUtc)
         {
@@ -102,6 +130,7 @@ public static class StateValidator
             Color = color,
             Opacity = opacity,
             LastOpenedUtc = lastOpened,
+            FontSizePx = fontSize,
         };
     }
 
@@ -155,19 +184,23 @@ public static class StateValidator
         var height = ClampEdge(
             raw.DefaultHeight, defaults.DefaultHeight, MinNoteHeight, "defaultHeight", Report);
 
-        var newNote = raw.NewNoteHotkey;
-        if (string.IsNullOrWhiteSpace(newNote))
+        var fontSize = raw.DefaultFontSizePx;
+        if (fontSize < MinFontSizePx || fontSize > MaxFontSizePx)
         {
-            Report("newNoteHotkey", $"was blank; used '{defaults.NewNoteHotkey}'.");
-            newNote = defaults.NewNoteHotkey;
+            // Reported even when absent, unlike a note's own size: this is one
+            // line for the whole app rather than one per note, and a
+            // settings.json that says 0 really is a value somebody wrote.
+            var replacement = fontSize <= 0
+                ? defaults.DefaultFontSizePx
+                : Math.Clamp(fontSize, MinFontSizePx, MaxFontSizePx);
+            Report("defaultFontSizePx", $"'{fontSize}' is unusable; used {replacement}.");
+            fontSize = replacement;
         }
 
-        var showHide = raw.ShowHideHotkey;
-        if (string.IsNullOrWhiteSpace(showHide))
-        {
-            Report("showHideHotkey", $"was blank; used '{defaults.ShowHideHotkey}'.");
-            showHide = defaults.ShowHideHotkey;
-        }
+        var newNote = ValidateHotkey(
+            raw.NewNoteHotkey, defaults.NewNoteHotkey, "newNoteHotkey", Report);
+        var showHide = ValidateHotkey(
+            raw.ShowHideHotkey, defaults.ShowHideHotkey, "showHideHotkey", Report);
 
         return raw with
         {
@@ -177,9 +210,43 @@ public static class StateValidator
             DefaultOpacity = opacity,
             DefaultWidth = width,
             DefaultHeight = height,
+            DefaultFontSizePx = fontSize,
             NewNoteHotkey = newNote,
             ShowHideHotkey = showHide,
         };
+    }
+
+    /// <summary>
+    /// A hotkey string that <see cref="HotkeySpec"/> cannot parse falls back
+    /// to the default, and a parseable one is stored in its canonical form.
+    /// </summary>
+    /// <remarks>
+    /// Rejecting only a blank is not enough:
+    /// "Ctrl+Alt+Enter" and a bare "N" both deserialise fine, and both mean a
+    /// hotkey the user configured that then silently never fires -- or, for the
+    /// bare key, one that would swallow that key for every application on the
+    /// machine. Canonicalising here as well as reporting keeps settings.json
+    /// from holding two spellings of the same combination.
+    /// </remarks>
+    private static string ValidateHotkey(
+        string raw, string fallback, string field, Action<string, string> report)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            report(field, $"was blank; used '{fallback}'.");
+            return fallback;
+        }
+
+        if (!HotkeySpec.TryParse(raw, out var spec))
+        {
+            report(field, $"'{raw}' is not a usable hotkey; used '{fallback}'.");
+            return fallback;
+        }
+
+        if (!string.Equals(spec.Canonical, raw, StringComparison.Ordinal))
+            report(field, $"'{raw}' was written as '{spec.Canonical}'.");
+
+        return spec.Canonical;
     }
 
     private static int ClampEdge(

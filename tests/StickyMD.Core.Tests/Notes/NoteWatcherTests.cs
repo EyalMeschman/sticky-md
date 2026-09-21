@@ -19,7 +19,7 @@ public class NoteWatcherTests
         File.WriteAllText(path, "edited by another app");
 
         Wait.Until(() => changed.Count > 0, "ExternalChanged to fire");
-        changed.Single().ShouldBe(WriteLedger.Normalize(path));
+        changed.Single().ShouldBe(NotePath.Canonical(path));
     }
 
     [Fact]
@@ -78,7 +78,7 @@ public class NoteWatcherTests
         File.Delete(path);
 
         Wait.Until(() => deleted.Count > 0, "Deleted to fire");
-        deleted[0].ShouldBe(WriteLedger.Normalize(path));
+        deleted[0].ShouldBe(NotePath.Canonical(path));
     }
 
     [Fact]
@@ -95,8 +95,8 @@ public class NoteWatcherTests
         File.Move(oldPath, newPath);
 
         Wait.Until(() => seen is not null, "Renamed to fire");
-        seen!.Value.Old.ShouldBe(WriteLedger.Normalize(oldPath));
-        seen!.Value.New.ShouldBe(WriteLedger.Normalize(newPath));
+        seen!.Value.Old.ShouldBe(NotePath.Canonical(oldPath));
+        seen!.Value.New.ShouldBe(NotePath.Canonical(newPath));
     }
 
     [Fact]
@@ -137,7 +137,7 @@ public class NoteWatcherTests
         File.Move(path, dir.File("a.txt"));
 
         Wait.Until(() => deleted.Count > 0, "Deleted for a note renamed out of the set");
-        deleted[0].ShouldBe(WriteLedger.Normalize(path));
+        deleted[0].ShouldBe(NotePath.Canonical(path));
         renamed.ShouldBeFalse();
     }
 

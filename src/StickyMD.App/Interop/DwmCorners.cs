@@ -9,7 +9,7 @@ namespace StickyMD.App.Interop;
 /// composition surface composites against black rather than against the WPF
 /// layer beneath it. So the WPF layer cannot show through the note content, and
 /// a clipped-geometry approach would round the chrome while leaving the note
-/// body square. Verified working in Spike 0 (hr = 0).
+/// body square. Verified in docs/spikes/2026-08-22-spike-0-transparency.md.
 /// </remarks>
 public static class DwmCorners
 {

@@ -38,7 +38,7 @@ public class NoteRepositoryTests
 
         try
         {
-            Path.GetFileName(repo.CreateNew()).ShouldBe("2026-08-22-untitled.md");
+            Path.GetFileName(repo.CreateNewRecorded().Path).ShouldBe("2026-08-22-untitled.md");
         }
         finally
         {
@@ -114,7 +114,7 @@ public class NoteRepositoryTests
         using var dir = new TempDir();
         var repo = new NoteRepository(dir.Path, On(2026, 8, 22));
 
-        var path = repo.CreateNew();
+        var path = repo.CreateNewRecorded().Path;
 
         Path.GetFileName(path).ShouldBe("2026-08-22-untitled.md");
         File.Exists(path).ShouldBeTrue();
@@ -126,9 +126,9 @@ public class NoteRepositoryTests
         using var dir = new TempDir();
         var repo = new NoteRepository(dir.Path, On(2026, 8, 22));
 
-        repo.CreateNew();
-        var second = repo.CreateNew();
-        var third = repo.CreateNew();
+        repo.CreateNewRecorded();
+        var second = repo.CreateNewRecorded().Path;
+        var third = repo.CreateNewRecorded().Path;
 
         Path.GetFileName(second).ShouldBe("2026-08-22-untitled-2.md");
         Path.GetFileName(third).ShouldBe("2026-08-22-untitled-3.md");
@@ -141,7 +141,7 @@ public class NoteRepositoryTests
         var root = Path.Combine(dir.Path, "StickyMD Notes");
         var repo = new NoteRepository(root, On(2026, 8, 22));
 
-        var path = repo.CreateNew();
+        var path = repo.CreateNewRecorded().Path;
 
         File.Exists(path).ShouldBeTrue();
     }
@@ -152,7 +152,7 @@ public class NoteRepositoryTests
         using var dir = new TempDir();
         var repo = new NoteRepository(dir.Path, On(2026, 8, 22));
 
-        var path = repo.CreateNew();
+        var path = repo.CreateNewRecorded().Path;
 
         File.ReadAllBytes(path).ShouldBe("\r\n"u8.ToArray());
         NoteFile.Read(path).Format.ShouldBe(NoteFormat.Canonical);
@@ -165,7 +165,7 @@ public class NoteRepositoryTests
         using var dir = new TempDir();
         var repo = new NoteRepository(dir.Path, On(2026, 8, 22));
 
-        var path = repo.CreateNew();
+        var path = repo.CreateNewRecorded().Path;
 
         Directory.GetFiles(dir.Path).ShouldBe([path]);
     }

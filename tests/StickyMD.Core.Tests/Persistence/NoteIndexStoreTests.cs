@@ -14,7 +14,8 @@ public class NoteIndexStoreTests
         Opacity: 0.95,
         AlwaysOnTop: true,
         IsOpen: true,
-        LastOpenedUtc: new DateTime(2026, 8, 22, 10, 14, 0, DateTimeKind.Utc));
+        LastOpenedUtc: new DateTime(2026, 8, 22, 10, 14, 0, DateTimeKind.Utc),
+        FontSizePx: 18);
 
     [Fact]
     public void Round_trips_every_field()

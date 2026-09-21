@@ -41,27 +41,33 @@ public static class NotePalette
 
     private static NoteTheme Base(NoteColor color, ThemeMode mode) => (color, mode) switch
     {
-        (NoteColor.Yellow, ThemeMode.Light) => new("#FCEE9B", "#3A3320", "#E8D77E", "#FFF7C0", "#3A3320", "#B08900", "#F5E9A8", "#857A50"),
-        (NoteColor.Yellow, ThemeMode.Dark) => new("#2E2A19", "#F0E9C8", "#554E2E", "#3A3520", "#F0E9C8", "#E0C34A", "#464026", "#A79E78"),
+        // Light: ContentBg is the big tinted surface, ChromeBg one step deeper,
+        // CodeBg and Border the two steps between them. Dark: the same ladder
+        // upside down, with enough chroma left in the surface that a note reads
+        // as its COLOUR and not as another shade of near-black -- the first dark
+        // palette here was mud, because it dropped saturation to reach darkness
+        // instead of dropping lightness and keeping the hue.
+        (NoteColor.Yellow, ThemeMode.Light) => new("#FCEE9B", "#40361B", "#E9D680", "#FFFAD6", "#40361B", "#9A6E12", "#F8EEB8", "#8A7A4E"),
+        (NoteColor.Yellow, ThemeMode.Dark) => new("#362A13", "#F5E9C6", "#63501F", "#453619", "#F5E9C6", "#EDC55F", "#51411F", "#B0A077"),
 
-        (NoteColor.Green, ThemeMode.Light) => new("#C9EDC4", "#23361F", "#A8DCA0", "#DFF5DC", "#23361F", "#2E7D32", "#D0EBCB", "#5E7458"),
-        (NoteColor.Green, ThemeMode.Dark) => new("#1B2818", "#D6E9D2", "#35492F", "#22321F", "#D6E9D2", "#7CC47F", "#2A3B26", "#8FA88B"),
+        (NoteColor.Green, ThemeMode.Light) => new("#C6E6CE", "#1F3A2B", "#A7D3B4", "#E6F5EA", "#1F3A2B", "#1E7A50", "#D7EDDE", "#5E7F6C"),
+        (NoteColor.Green, ThemeMode.Dark) => new("#182D20", "#D9EFE1", "#2F5740", "#1F3A2A", "#D9EFE1", "#6ED79B", "#26452F", "#8CB29C"),
 
-        (NoteColor.Blue, ThemeMode.Light) => new("#C4DDF5", "#1D2B38", "#9FC6E8", "#DCEBFA", "#1D2B38", "#1565C0", "#CFE2F5", "#566B7D"),
-        (NoteColor.Blue, ThemeMode.Dark) => new("#17222B", "#D3E3F0", "#2F4150", "#1E2B36", "#D3E3F0", "#6FAEDB", "#26353F", "#8AA0B2"),
+        (NoteColor.Blue, ThemeMode.Light) => new("#C6DCF2", "#1C3149", "#A6C6E6", "#E5F0FB", "#1C3149", "#1667BC", "#D6E7F7", "#5C7692"),
+        (NoteColor.Blue, ThemeMode.Dark) => new("#15263F", "#D8E7F7", "#2C4A73", "#1C3050", "#D8E7F7", "#7CBBF5", "#233A5D", "#8DA7C4"),
 
-        (NoteColor.Pink, ThemeMode.Light) => new("#F5C8D9", "#3A2029", "#E8A3BD", "#FBE0EA", "#3A2029", "#C2185B", "#F5D2E0", "#7D5665"),
-        (NoteColor.Pink, ThemeMode.Dark) => new("#2B1920", "#F0D8E2", "#4D2F3A", "#362028", "#F0D8E2", "#E086AC", "#402631", "#B08D9C"),
+        (NoteColor.Pink, ThemeMode.Light) => new("#F7CEDA", "#44202D", "#EDB0C1", "#FDE8EE", "#44202D", "#C03965", "#F8DBE3", "#88626F"),
+        (NoteColor.Pink, ThemeMode.Dark) => new("#351826", "#F5DDE6", "#613049", "#431F2F", "#F5DDE6", "#F28CB1", "#4F2639", "#BC93A4"),
 
-        (NoteColor.Purple, ThemeMode.Light) => new("#DACCF0", "#2B2138", "#BFA9E0", "#EBE2F7", "#2B2138", "#6A3FB5", "#E0D4F2", "#6B5C85"),
-        (NoteColor.Purple, ThemeMode.Dark) => new("#211B2B", "#E1D6F0", "#3E3350", "#2B2338", "#E1D6F0", "#A886DB", "#332A42", "#9C8CB2"),
+        (NoteColor.Purple, ThemeMode.Light) => new("#D9CDF2", "#2E2350", "#C0AFE6", "#EEE7FA", "#2E2350", "#6B44C6", "#E4DCF6", "#6D6191"),
+        (NoteColor.Purple, ThemeMode.Dark) => new("#241B40", "#E5DBF9", "#453578", "#2E2352", "#E5DBF9", "#AC8DF7", "#392B63", "#9F94C2"),
 
-        (NoteColor.Gray, ThemeMode.Light) => new("#DCE0E4", "#23282D", "#BFC6CC", "#ECEEF0", "#23282D", "#455A64", "#E0E4E8", "#667079"),
-        (NoteColor.Gray, ThemeMode.Dark) => new("#1C1F22", "#DDE2E6", "#383D42", "#24282C", "#DDE2E6", "#8FA8B5", "#2C3135", "#949CA3"),
+        (NoteColor.Gray, ThemeMode.Light) => new("#D8DEE5", "#20272F", "#BBC5D0", "#EFF2F6", "#20272F", "#3F6588", "#E2E7ED", "#64717E"),
+        (NoteColor.Gray, ThemeMode.Dark) => new("#1D2228", "#DFE5EC", "#3A424B", "#262C33", "#DFE5EC", "#8FADC6", "#2F363E", "#929CA7"),
 
         // Charcoal is a dark note by design, so its two variants are close.
-        (NoteColor.Charcoal, ThemeMode.Light) => new("#24272C", "#E4E7EA", "#454A52", "#2E3238", "#E4E7EA", "#7FB3D5", "#383D44", "#9AA3AC"),
-        (NoteColor.Charcoal, ThemeMode.Dark) => new("#1A1C1F", "#E4E7EA", "#383C42", "#23262A", "#E4E7EA", "#7FB3D5", "#2C3035", "#9AA3AC"),
+        (NoteColor.Charcoal, ThemeMode.Light) => new("#23272E", "#E6EAF0", "#3C434D", "#2D323A", "#E6EAF0", "#7FB6E0", "#373D46", "#99A3AF"),
+        (NoteColor.Charcoal, ThemeMode.Dark) => new("#141619", "#E4E9EF", "#2C3037", "#1C1F23", "#E4E9EF", "#7FB6E0", "#24282D", "#98A2AC"),
 
         _ => throw new ArgumentOutOfRangeException(nameof(color), color, "Unmapped note color."),
     };

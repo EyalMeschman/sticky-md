@@ -46,7 +46,9 @@ public sealed class NoteRepository(string notesRoot, IClock clock)
 
     /// <summary>
     /// Creates a new empty note named for today's date, suffixing -2, -3 and so on
-    /// past collisions.
+    /// past collisions. Returns both its path and the write outcome, so the
+    /// caller can record it in an <see cref="IWriteLedger"/>. Without that, the
+    /// watcher reports the app's own new note as an external change.
     /// </summary>
     /// <remarks>
     /// NOT THREAD-SAFE. The free-name scan and the write are separate steps, and
@@ -55,18 +57,10 @@ public sealed class NoteRepository(string notesRoot, IClock clock)
     /// FileMode.CreateNew claim below narrows that window and closes the
     /// cross-process case, but does not eliminate it.
     ///
-    /// CALLERS MUST SERIALISE. Plan C's new-note hotkey runs on the UI thread,
-    /// which satisfies this; anything that dispatches note creation to a thread
-    /// pool must add its own lock.
+    /// CALLERS MUST SERIALISE. The new-note hotkey and the tray both run this on
+    /// the UI thread, which satisfies this; anything that dispatches note
+    /// creation to a thread pool must add its own lock.
     /// </remarks>
-    public string CreateNew() => CreateNewRecorded().Path;
-
-    /// <summary>
-    /// Creates a new note and returns both its path and the write outcome, so the
-    /// caller can record it in an <see cref="IWriteLedger"/>. Without that, the
-    /// watcher reports the app's own new note as an external change.
-    /// </summary>
-    /// <inheritdoc cref="CreateNew"/>
     public (string Path, NoteFile.WriteOutcome Outcome) CreateNewRecorded()
     {
         EnsureRootExists();

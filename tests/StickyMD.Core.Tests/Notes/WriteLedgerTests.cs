@@ -122,8 +122,7 @@ public class WriteLedgerTests
 
         fingerprint.Size.ShouldBe(outcome.Size);
         fingerprint.ContentHash.ShouldBe(outcome.ContentHash);
-        fingerprint.LastWriteUtc.ShouldBe(outcome.LastWriteUtc);
-        fingerprint.NormalizedPath.ShouldBe(WriteLedger.Normalize(path));
+        fingerprint.NormalizedPath.ShouldBe(NotePath.Canonical(path));
     }
 
     [Fact]

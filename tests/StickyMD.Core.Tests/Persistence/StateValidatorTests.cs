@@ -18,7 +18,8 @@ public class StateValidatorTests
         Opacity: 0.9,
         AlwaysOnTop: true,
         IsOpen: true,
-        LastOpenedUtc: Now.AddHours(-1));
+        LastOpenedUtc: Now.AddHours(-1),
+        FontSizePx: 18);
 
     private static (NoteState State, List<ValidationIssue> Issues) Run(NoteState raw)
     {
@@ -247,6 +248,98 @@ public class StateValidatorTests
         settings.NewNoteHotkey.ShouldBe("Ctrl+Alt+N");
         settings.ShowHideHotkey.ShouldBe("Ctrl+Alt+S");
         issues.Count.ShouldBe(2);
+    }
+
+    [Fact]
+    public void A_note_with_no_font_size_takes_the_settings_default_SILENTLY()
+    {
+        // Zero is what every note in an index written before fontSizePx
+        // existed deserialises to, so this is an UPGRADE, not a correction.
+        // Reporting it would put one line per note into diagnostics.log on the
+        // first run after an update and teach the reader to skim.
+        var (state, issues) = Run(Valid() with { FontSizePx = 0 });
+
+        state.FontSizePx.ShouldBe(Defaults.DefaultFontSizePx);
+        issues.ShouldBeEmpty();
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(8)]
+    [InlineData(400)]
+    public void A_font_size_outside_the_usable_range_is_clamped_and_reported(int raw)
+    {
+        // Unlike an absent one: a value somebody actually wrote gets a line.
+        var (state, issues) = Run(Valid() with { FontSizePx = raw });
+
+        state.FontSizePx.ShouldBeInRange(
+            StateValidator.MinFontSizePx, StateValidator.MaxFontSizePx);
+        issues.ShouldContain(i => i.Field == "fontSizePx");
+    }
+
+    [Fact]
+    public void A_usable_font_size_is_left_exactly_alone()
+    {
+        var (state, issues) = Run(Valid() with { FontSizePx = 22 });
+
+        state.FontSizePx.ShouldBe(22);
+        issues.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public void An_unusable_default_font_size_in_settings_is_replaced_and_reported()
+    {
+        var issues = new List<ValidationIssue>();
+
+        var settings = StateValidator.ValidateSettings(
+            new AppSettings { DefaultFontSizePx = 0 }, issues);
+
+        settings.DefaultFontSizePx.ShouldBe(new AppSettings().DefaultFontSizePx);
+        issues.ShouldContain(i => i.Field == "defaultFontSizePx");
+    }
+
+    [Fact]
+    public void The_shell_and_the_settings_agree_on_the_default_font_size()
+    {
+        // Two numbers both meaning "the default text size" is how the CSS and
+        // settings.json come to disagree. AppSettings takes its value from the
+        // builder's const rather than repeating it; this pins that.
+        new AppSettings().DefaultFontSizePx
+            .ShouldBe(StickyMD.Core.Markdown.HtmlDocumentBuilder.DefaultFontSizePx);
+    }
+
+    [Fact]
+    public void A_hotkey_that_cannot_be_registered_falls_back_to_its_default()
+    {
+        var issues = new List<ValidationIssue>();
+
+        // Both deserialise cleanly and both are unusable: "Ctrl+Alt+Enter"
+        // named a key that is not in the vocabulary until it was added, and a
+        // bare "N" would have RegisterHotKey swallow the letter N system-wide
+        // for every other application on the machine.
+        var settings = StateValidator.ValidateSettings(
+            new AppSettings { NewNoteHotkey = "Ctrl+Alt+Nope", ShowHideHotkey = "S" }, issues);
+
+        settings.NewNoteHotkey.ShouldBe("Ctrl+Alt+N");
+        settings.ShowHideHotkey.ShouldBe("Ctrl+Alt+S");
+
+        issues.ShouldContain(i => i.Field == "newNoteHotkey");
+        issues.ShouldContain(i => i.Field == "showHideHotkey");
+    }
+
+    [Fact]
+    public void A_usable_hotkey_is_stored_in_its_canonical_form()
+    {
+        var issues = new List<ValidationIssue>();
+
+        var settings = StateValidator.ValidateSettings(
+            new AppSettings { NewNoteHotkey = "alt+ctrl+j" }, issues);
+
+        settings.NewNoteHotkey.ShouldBe("Ctrl+Alt+J");
+
+        // Reported, not silently rewritten: the user's own file changed under
+        // them, and every other correction in here says so too.
+        issues.ShouldContain(i => i.Field == "newNoteHotkey");
     }
 
     [Fact]
