@@ -395,6 +395,12 @@ public sealed class WindowManager(
     }
 
     /// <summary>
+    /// Whether at least one note is on screen. The tray's Show Notes tick and
+    /// the toggle below both read this, so they cannot disagree.
+    /// </summary>
+    public bool AnyVisible => _windows.Values.Any(w => w.IsVisible);
+
+    /// <summary>
     /// The tray's left click, per spec §7: "Left-click toggles Show All /
     /// Hide All".
     /// </summary>
@@ -411,7 +417,7 @@ public sealed class WindowManager(
     /// </remarks>
     public void ToggleShowHideAll()
     {
-        if (_windows.Values.Any(w => w.IsVisible)) HideAll();
+        if (AnyVisible) HideAll();
         else ShowAll();
     }
 

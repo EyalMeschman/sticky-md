@@ -58,8 +58,15 @@ public partial class SettingsWindow : Window
         WidthBox.Text = settings.DefaultWidth.ToString();
         HeightBox.Text = settings.DefaultHeight.ToString();
         RemoteImagesCheck.IsChecked = settings.AllowRemoteImages;
+        StartHiddenCheck.IsChecked = settings.StartHidden;
         NewNoteHotkeyBox.Text = settings.NewNoteHotkey;
         ShowHideHotkeyBox.Text = settings.ShowHideHotkey;
+
+        // The boxes keep their text when disabled, so re-ticking gives the
+        // user back the combinations they had.
+        HotkeysCheck.IsChecked = settings.HotkeysEnabled;
+        HotkeyGrid.IsEnabled = settings.HotkeysEnabled;
+        HotkeysCheck.Click += (_, _) => HotkeyGrid.IsEnabled = HotkeysCheck.IsChecked == true;
 
         OpacitySlider.Value = Math.Clamp(settings.DefaultOpacity * 100, 30, 100);
         OpacityReadout.Text = $"{OpacitySlider.Value:0}%";
@@ -291,7 +298,9 @@ public partial class SettingsWindow : Window
             Theme = (ThemePreference)ThemeBox.SelectedItem,
             NewNoteHotkey = NewNoteHotkeyBox.Text,
             ShowHideHotkey = ShowHideHotkeyBox.Text,
+            HotkeysEnabled = HotkeysCheck.IsChecked == true,
             AllowRemoteImages = RemoteImagesCheck.IsChecked == true,
+            StartHidden = StartHiddenCheck.IsChecked == true,
         };
 
         // Through the SAME validator the loader uses. Settings must not be able

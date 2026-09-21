@@ -123,6 +123,10 @@ public class NoteIndexStoreTests
         json.ShouldContain("\"notes\"");
         json.ShouldContain("\"alwaysOnTop\"");
         json.ShouldContain("\"lastOpenedUtc\"");
+
+        // NoteState.Bounds is derived from x/y/w/h and must not be written as
+        // a ninth field; JsonIgnore on it is what keeps the file's shape.
+        json.ShouldNotContain("\"bounds\"");
         json.ShouldContain("\"isOpen\"");
         json.ShouldContain("\"monitor\"");
     }

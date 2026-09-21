@@ -164,6 +164,16 @@ public partial class App : Application
 
         _manager.RestoreOpenNotes();
 
+        // Hide, not skip: the windows exist and isOpen stays set, so the tray
+        // left-click brings back exactly the notes a normal launch would have
+        // shown. Only a sign-in launch, because that is the one nobody asked
+        // for at that moment; a manual launch means "I want my notes".
+        if (settings.StartHidden
+            && e.Args.Contains(StartupManager.StartupArgument, StringComparer.OrdinalIgnoreCase))
+        {
+            _manager.HideAll();
+        }
+
         // Through the SAME parser the pipe uses. "Open with StickyMD" must not
         // behave one way with the app already up and another way with it down.
         // Skipped when there is nothing to apply: a bare first launch has
@@ -236,6 +246,14 @@ public partial class App : Application
     private void ApplyHotkeys(AppSettings settings)
     {
         if (_hotkeys is null || _manager is null) return;
+
+        if (!settings.HotkeysEnabled)
+        {
+            // Apply with nothing: UnregisterAll releases both combinations
+            // and clears Failures, so the tray warning item goes with them.
+            _hotkeys.Apply([]);
+            return;
+        }
 
         _hotkeys.Apply(
         [

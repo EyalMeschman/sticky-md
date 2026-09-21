@@ -74,8 +74,8 @@ a result from it, because each cost a confident wrong answer:
       is not on the taskbar) and its tooltip says **StickyMD**. _(automated)_
 - [ ] The icon is the same yellow as a default note, and legible at 100% —
       **and at 150%**, which needs a scaled display.
-- [ ] Right-click shows exactly: New Note, Recent Notes ▸, Open Note…, Show All,
-      Hide All, ─, Settings, Launch at Startup ☑, ─, Exit. _(automated)_
+- [ ] Right-click shows exactly: New Note, Recent Notes ▸, Open Note…,
+      Show Notes ☑, ─, Settings, Launch at Startup ☑, ─, Exit. _(automated)_
 - [ ] **New Note** creates a note in the notes root and opens it in edit mode
       with the caret in it. _(the file and the window are automated; the caret
       is not)_
@@ -93,8 +93,9 @@ a result from it, because each cost a confident wrong answer:
       index while the app is closed, restart, and open the note by path. This is
       the reason the item exists.
 - [ ] `Open Note…` reaches a note **outside** the notes root, and it opens.
-- [ ] **Show All** and **Hide All** do what they say, and neither touches
-      `isOpen`. _(the toggle and `isOpen` are automated)_
+- [ ] **Show Notes** is ticked while any note is visible, unticked after hiding,
+      and clicking it toggles; neither direction touches `isOpen`. _(the
+      toggle and `isOpen` are automated)_
 - [ ] **Left-click** toggles Show All / Hide All, single click, no double-click
       delay. _(automated)_
 - [ ] Left-click with **zero** notes open does nothing — no new note, no error.
@@ -120,6 +121,10 @@ a result from it, because each cost a confident wrong answer:
       old combination stops working.
 - [ ] Setting both hotkeys to the same combination flags the second, not the
       first. _(automated)_
+- [ ] Unticking **Use global hotkeys** and saving releases both combinations at
+      once (another app can now register them), greys out the two boxes but
+      keeps their text, and removes the tray's ⚠ item if there was one.
+      Re-ticking brings the same combinations back without a restart.
 
 ## Launch at Startup
 
@@ -136,6 +141,10 @@ a result from it, because each cost a confident wrong answer:
       the notes it had. Needs an actual reboot.
 - [ ] A startup launch does not steal focus from the logon sequence — notes come
       back `ShowActivated=false`.
+- [ ] With **keep the notes hidden** ticked, launching with `--startup` puts no
+      note on screen; Show Notes is unticked; one left-click brings back every
+      note a normal launch shows. A launch **without** `--startup` still shows
+      them.
 
 ## Settings
 
@@ -181,7 +190,7 @@ a result from it, because each cost a confident wrong answer:
 - [ ] A note that has never had a size takes the Settings default **without** a
       correction line in `diagnostics.log`. _(automated)_
 - [ ] `Ctrl+E` shows the editor at the **same** size as the preview.
-- [ ] Settings' *Text* slider changes what a **new** note starts at and leaves
+- [ ] Settings' _Text_ slider changes what a **new** note starts at and leaves
       existing notes alone.
 - [ ] The size survives a close and reopen, and a restart. _(the reopen half is
       covered by a unit test; the restart is not)_

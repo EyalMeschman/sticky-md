@@ -20,6 +20,8 @@ public class SettingsStoreTests
         defaults.Theme.ShouldBe(ThemePreference.System);
         defaults.NewNoteHotkey.ShouldBe("Ctrl+Alt+N");
         defaults.ShowHideHotkey.ShouldBe("Ctrl+Alt+S");
+        defaults.HotkeysEnabled.ShouldBeTrue();
+        defaults.StartHidden.ShouldBeFalse();
     }
 
     [Fact]
@@ -46,7 +48,9 @@ public class SettingsStoreTests
             Theme = ThemePreference.Dark,
             NewNoteHotkey = "Ctrl+Shift+N",
             ShowHideHotkey = "Ctrl+Shift+S",
+            HotkeysEnabled = false,
             AllowRemoteImages = true,
+            StartHidden = true,
         };
 
         store.Save(settings);

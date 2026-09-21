@@ -32,6 +32,9 @@ public sealed record NoteState(
     DateTime LastOpenedUtc,
     int FontSizePx = 0)
 {
+    // JsonIgnore, or System.Text.Json writes this derived rect into notes.json
+    // as a ninth field beside the four it is computed from.
+    [System.Text.Json.Serialization.JsonIgnore]
     public PixelRect Bounds => new(X, Y, W, H);
 
     /// <summary>This state with the window's live rectangle stamped onto it.</summary>

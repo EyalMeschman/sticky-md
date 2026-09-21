@@ -1577,7 +1577,7 @@ try {
             $names = @(UiaMenuItemNames)
             $wanted = @(
                 'New Note', 'Recent Notes', 'Open Note…',
-                'Show All', 'Hide All', 'Settings', 'Launch at Startup', 'Exit')
+                'Show Notes', 'Settings', 'Launch at Startup', 'Exit')
             $missing = @($wanted | Where-Object { $names -notcontains $_ })
 
             Check 'Tray' 'The menu carries every item spec 7 asks for' `
@@ -1585,7 +1585,7 @@ try {
                 ('missing: ' + ($missing -join ', ') + '. saw: ' + ($names -join ' | '))
 
             # Order, not just presence. Exit belongs last and Settings belongs
-            # below Hide All rather than among the note actions, and a menu
+            # below Show Notes rather than among the note actions, and a menu
             # holding the right items in the wrong order is still wrong.
             $order = @($wanted |
                 Where-Object { $names -contains $_ } |

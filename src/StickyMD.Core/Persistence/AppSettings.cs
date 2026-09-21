@@ -46,5 +46,18 @@ public sealed record AppSettings
 
     public string ShowHideHotkey { get; init; } = "Ctrl+Alt+S";
 
+    /// <summary>
+    /// Off means neither combination is registered, so both stay free for
+    /// whatever else wants them. The combinations themselves are kept.
+    /// </summary>
+    public bool HotkeysEnabled { get; init; } = true;
+
     public bool AllowRemoteImages { get; init; }
+
+    /// <summary>
+    /// A sign-in launch (<c>--startup</c>) restores the open notes hidden, so
+    /// the desktop is not carpeted at logon. Tray left-click or the show/hide
+    /// hotkey brings them back. Manual launches are unaffected.
+    /// </summary>
+    public bool StartHidden { get; init; }
 }

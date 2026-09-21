@@ -282,6 +282,14 @@ public sealed partial class NoteWindow : Window, INoteWindow
         PreviewKeyDown += OnWindowPreviewKeyDown;
         EditButton.Click += (_, _) => ToggleEditMode();
 
+        // Clicking away from a note ends edit mode, exactly as the button does.
+        // The text was never at risk: autosave and Editor.LostFocus already
+        // flush it. What this fixes is a note left as a raw text box because
+        // the user forgot the button. Deactivated is the window-level event;
+        // the editor's own LostFocus also fires for the ⋯ menu and the rename
+        // prompt, which must not throw the user out of edit mode.
+        Deactivated += (_, _) => { if (_editing) _ = ExitEditModeAsync(); };
+
         WireHeader();
         ApplyTheme(theme);
 

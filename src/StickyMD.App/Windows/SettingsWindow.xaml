@@ -93,9 +93,13 @@
     </StackPanel>
 
     <TextBlock Text="Global hotkeys" Style="{StaticResource SectionHeader}" />
+    <CheckBox x:Name="HotkeysCheck" Margin="0,0,0,6"
+              Content="Use global hotkeys" />
+    <TextBlock TextWrapping="Wrap" Foreground="Gray" Margin="20,0,0,6"
+               Text="Unticked, StickyMD registers neither combination, so other apps can use them." />
     <TextBlock TextWrapping="Wrap" Foreground="Gray" Margin="0,0,0,4"
                Text="Click a box and press the combination you want. It needs at least one of Ctrl, Alt, Shift or Win." />
-    <Grid Margin="0,0,0,4">
+    <Grid x:Name="HotkeyGrid" Margin="0,0,0,4">
       <Grid.ColumnDefinitions>
         <ColumnDefinition Width="110" />
         <ColumnDefinition Width="160" />
@@ -130,7 +134,14 @@
               Content="Load images from the internet in notes" />
     <TextBlock TextWrapping="Wrap" Foreground="Gray" Margin="20,0,0,6"
                Text="Off by default. Notes sync, so a shared note containing a tracking image must not make network requests just because StickyMD rendered it." />
-    <CheckBox x:Name="StartupCheck" Content="Launch StickyMD when I sign in" />
+    <!-- The same wording as the tray's "Launch at Startup" item, because it is
+         the same registry entry, with the meaning of "startup" spelled out. -->
+    <CheckBox x:Name="StartupCheck" Margin="0,0,0,6"
+              Content="Launch at Startup (when I sign in to Windows)" />
+    <CheckBox x:Name="StartHiddenCheck" Margin="20,0,0,0"
+              Content="…but keep the notes hidden until I ask for them" />
+    <TextBlock TextWrapping="Wrap" Foreground="Gray" Margin="40,0,0,0"
+               Text="Left-click the tray icon, or press the show/hide hotkey, to bring them back." />
 
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
       <Button x:Name="SaveButton" Content="Save" IsDefault="True"

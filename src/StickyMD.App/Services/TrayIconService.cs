@@ -119,10 +119,15 @@ public sealed class TrayIconService : IDisposable
     }
 
     /// <summary>
-    /// The spec's menu, verbatim and in order: New Note, Recent Notes ▸,
-    /// Open Note…, Show All, Hide All, ─, Settings, Launch at Startup ☑, ─,
-    /// Exit.
+    /// The spec's menu, in order: New Note, Recent Notes ▸, Open Note…,
+    /// Show Notes ☑, ─, Settings, Launch at Startup ☑, ─, Exit.
     /// </summary>
+    /// <remarks>
+    /// Show Notes is one checkable item where the spec first listed Show All
+    /// and Hide All (revision note of 2026-09-21). The tick is read off the
+    /// screen on every open, the same test the left-click toggle uses, so a
+    /// note closed with <c>✕</c> cannot leave it stale.
+    /// </remarks>
     private ContextMenu BuildMenu()
     {
         var menu = new ContextMenu();
@@ -130,8 +135,15 @@ public sealed class TrayIconService : IDisposable
         menu.Items.Add(Item("New Note", NewNote));
         menu.Items.Add(RecentNotesItem());
         menu.Items.Add(Item("Open Note…", OpenNoteDialog));
-        menu.Items.Add(Item("Show All", _manager.ShowAll));
-        menu.Items.Add(Item("Hide All", _manager.HideAll));
+
+        var show = new MenuItem
+        {
+            Header = "Show Notes",
+            IsCheckable = true,
+            IsChecked = _manager.AnyVisible,
+        };
+        show.Click += (_, _) => _manager.ToggleShowHideAll();
+        menu.Items.Add(show);
 
         menu.Items.Add(new Separator());
 

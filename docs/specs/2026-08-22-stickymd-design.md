@@ -589,6 +589,20 @@ Exit
 > failing to load, and `scripts/verify-smoke-ui.ps1` has to open the flyout to
 > find the icon at all.
 
+> **Revised 2026-09-21.** `Show All` and `Hide All` are one checkable item,
+> **`Show Notes ☑`**, ticked when at least one note is on screen and clicking
+> it runs the same toggle as the left-click. Two items that each only ever
+> make sense in one state were a pair of buttons where a switch was wanted; the
+> tick also tells the user which state they are in before they click. `HideAll`
+> and `ShowAll` remain in code, for the hotkey toggle and for a second launch.
+>
+> The same revision adds two settings. **Start hidden** (`startHidden`, off):
+> a `--startup` launch restores the open notes and hides them at once, so
+> signing in does not carpet the desktop; a manual launch still shows them.
+> **Hotkeys enabled** (`hotkeysEnabled`, on): off registers neither
+> combination, leaving both free for other applications, and keeps the
+> combinations for when it is turned back on.
+
 ### Hotkeys
 
 Hidden `HwndSource` + `RegisterHotKey`. Defaults `Ctrl+Alt+N` (new note), `Ctrl+Alt+S`
