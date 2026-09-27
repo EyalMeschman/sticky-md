@@ -62,6 +62,24 @@ public sealed class WindowManager(
     private readonly Dictionary<string, INoteWindow> _windows =
         NotePath.NewMap<INoteWindow>();
 
+    /// <summary>
+    /// Notes a clamp moved: where the user put the note, and where the clamp
+    /// showed it instead.
+    /// </summary>
+    /// <remarks>
+    /// A clamp answers to the screen as it is at one moment, and that moment
+    /// can be transient: a logon before the display has its real mode, a
+    /// game switching to 1280x720, a monitor waking up. Persisting the clamped
+    /// rect made each of those permanent -- a note below y=720 was saved at
+    /// y=720 minus its height, and nothing ever moved it back. The index keeps
+    /// the user's rect instead, and <see cref="OnDisplaySettingsChanged"/>
+    /// restores it once it fits. An entry lasts only while the window is still
+    /// exactly where the clamp put it; a drag makes the dragged-to rect the
+    /// user's again.
+    /// </remarks>
+    private readonly Dictionary<string, (PixelRect Placed, PixelRect Shown)> _clamped =
+        NotePath.NewMap<(PixelRect, PixelRect)>();
+
     private AppSettings _settings = settings;
     private bool _disposed;
 
@@ -245,7 +263,11 @@ public sealed class WindowManager(
 
     private void Instantiate(string canonical, NoteState state, bool activate)
     {
-        var clamped = ClampToMonitors(state);
+        var clamped = state.WithBounds(
+            WindowPlacement.Clamp(state.Bounds, monitors.GetMonitors()));
+        if (clamped.Bounds != state.Bounds) _clamped[canonical] = (state.Bounds, clamped.Bounds);
+        else _clamped.Remove(canonical);
+
         var palette = NotePalette.Get(clamped.Color, theme.Resolve(_settings.Theme));
 
         var window = factory.Create(canonical, clamped, palette, _settings.AllowRemoteImages);
@@ -260,11 +282,9 @@ public sealed class WindowManager(
 
         window.ShowNote(activate);
 
-        // ALWAYS the clamped state, and always from here -- this is the single
-        // point where "what the window was given" and "what the index records"
-        // are the same value. Persisting unconditionally rather than only on a
-        // change costs one write of identical content.
-        Persist(canonical, clamped);
+        // The UNCLAMPED state: see _clamped. Persisting unconditionally rather
+        // than only on a change costs one write of identical content.
+        Persist(canonical, state);
 
         OfferRecovery(canonical, window);
     }
@@ -366,7 +386,7 @@ public sealed class WindowManager(
 
         if (bounds is { Width: > 0, Height: > 0 } rect)
         {
-            state = state.WithBounds(rect);
+            state = state.WithBounds(PlacedBounds(canonical, rect));
         }
 
         // isOpen is deliberately NOT cleared. The close glyph means "off my
@@ -444,7 +464,7 @@ public sealed class WindowManager(
             if (bounds.Width > 0 && bounds.Height > 0
                 && index.Notes.TryGetValue(path, out var state))
             {
-                Persist(path, state.WithBounds(bounds));
+                Persist(path, state.WithBounds(PlacedBounds(path, bounds)));
             }
 
             // Detach BEFORE Dispose: see Detach's remarks. Without this, a
@@ -592,7 +612,14 @@ public sealed class WindowManager(
             var bounds = window.Bounds;
             if (bounds.Width <= 0 || bounds.Height <= 0) continue;
 
-            var clamped = WindowPlacement.Clamp(bounds, screens);
+            // Clamp the USER'S rect, not the live one: a note an earlier,
+            // smaller screen pushed aside goes back where it was put the
+            // moment it fits again.
+            var placed = PlacedBounds(path, bounds);
+            var clamped = WindowPlacement.Clamp(placed, screens);
+
+            if (clamped == placed) _clamped.Remove(path);
+            else _clamped[path] = (placed, clamped);
 
             // Only touch a note that actually moved. Reapplying a correct rect
             // would nudge every window on every display change.
@@ -600,14 +627,12 @@ public sealed class WindowManager(
 
             if (!index.Notes.TryGetValue(path, out var state)) continue;
 
-            var updated = state.WithBounds(clamped);
-
             window.ApplyState(
-                updated,
-                NotePalette.Get(updated.Color, theme.Resolve(_settings.Theme)),
+                state.WithBounds(clamped),
+                NotePalette.Get(state.Color, theme.Resolve(_settings.Theme)),
                 _settings.AllowRemoteImages);
 
-            Persist(path, updated);
+            Persist(path, state.WithBounds(placed));
         }
     }
 
@@ -746,7 +771,7 @@ public sealed class WindowManager(
     private void OnStateChanged(string path, NoteState state)
     {
         if (!NotePath.TryCanonical(path, out var canonical)) return;
-        Persist(canonical, state);
+        Persist(canonical, state.WithBounds(PlacedBounds(canonical, state.Bounds)));
     }
 
     private void Rekey(string oldCanonical, string newCanonical)
@@ -797,14 +822,28 @@ public sealed class WindowManager(
         }
 
         _windows[newCanonical] = window;
+        if (_clamped.Remove(oldCanonical, out var clampedEntry)) _clamped[newCanonical] = clampedEntry;
 
         // The window remaps note.local as part of this, or images in the moved
         // note silently stop loading.
         window.NotifyRenamed(newCanonical);
     }
 
-    private NoteState ClampToMonitors(NoteState state)
-        => state.WithBounds(WindowPlacement.Clamp(state.Bounds, monitors.GetMonitors()));
+    /// <summary>
+    /// The rect to persist for a window whose live rect is <paramref name="live"/>:
+    /// the user's own rect if a clamp is all that moved it, otherwise
+    /// <paramref name="live"/>. EVERY geometry harvest goes through this.
+    /// </summary>
+    private PixelRect PlacedBounds(string canonical, PixelRect live)
+    {
+        if (_clamped.TryGetValue(canonical, out var entry))
+        {
+            if (entry.Shown == live) return entry.Placed;
+            _clamped.Remove(canonical);
+        }
+
+        return live;
+    }
 
     private void Persist(string canonical, NoteState state)
     {

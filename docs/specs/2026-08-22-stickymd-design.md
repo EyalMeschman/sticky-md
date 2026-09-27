@@ -284,6 +284,14 @@ the window in the wrong place. The app manifests as PerMonitorV2.
 On restore, `WindowPlacement.Clamp` moves any rect that no longer intersects a visible work area
 onto the nearest monitor. Off-screen notes are re-clamped on `WM_DISPLAYCHANGE`.
 
+> **Revised 2026-09-28, after notes were found moved up after restarts.** A clamp moves the
+> window and never the index entry. The index keeps the rect the user chose, and
+> `WM_DISPLAYCHANGE` clamps that rect again, so a note that a transient smaller screen pushed
+> aside goes back to its place once it fits. A transient here means a logon before the display
+> has its real mode, a game at 1280×720 or a monitor waking up. Persisting the clamped rect
+> made every one of those permanent: both notes below y=720 were saved with their bottom edge
+> at exactly y=720. Dragging a clamped note makes the new rect the user's again.
+
 ### File format preservation
 
 **Existing files keep what they have**: encoding, BOM presence, CRLF vs LF, and

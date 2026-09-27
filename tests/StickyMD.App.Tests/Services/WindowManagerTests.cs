@@ -442,6 +442,79 @@ public class WindowManagerTests : IDisposable
         _factory.For(path).StatesApplied.Last().X.ShouldBeLessThan(2560);
     }
 
+    private static FakeMonitorProvider OnlyA720pScreen() => new(
+        new MonitorInfo(
+            new PixelRect(0, 0, 1280, 720),
+            new PixelRect(0, 0, 1280, 720),
+            96, true, @"\\.\DISPLAY1"));
+
+    [Fact]
+    public void A_note_clamped_by_a_transient_small_screen_keeps_its_saved_rect()
+    {
+        // A logon before the display has its real mode: the note is shown
+        // clamped, and the index must not learn the clamp.
+        var path = WriteNote("n.md");
+        var index = new NoteIndex();
+        index.Notes[path] = StateAt(170, 755);
+
+        _monitors.Monitors = OnlyA720pScreen().Monitors;
+        var manager = Build(index);
+        manager.RestoreOpenNotes();
+
+        _factory.For(path).State.Y.ShouldBe(720 - 340);
+        _indexStore.Load().Notes[path].Y.ShouldBe(755);
+
+        // The window still sits where the clamp put it, so exit persists the
+        // user's rect, not the clamped one.
+        _factory.For(path).Bounds = new PixelRect(170, 720 - 340, 300, 340);
+        manager.ShutdownWithoutClosingNotes();
+
+        _indexStore.Load().Notes[path].Y.ShouldBe(755);
+    }
+
+    [Fact]
+    public void A_note_pushed_aside_by_a_smaller_screen_goes_back_when_it_grows()
+    {
+        var path = WriteNote("n.md");
+        var index = new NoteIndex();
+        index.Notes[path] = StateAt(170, 755);
+
+        var manager = Build(index);
+        manager.RestoreOpenNotes();
+
+        // A game switches to 1280x720.
+        _monitors.Monitors = OnlyA720pScreen().Monitors;
+        manager.OnDisplaySettingsChanged();
+
+        var shrunk = _factory.For(path).StatesApplied.Last();
+        shrunk.Y.ShouldBe(720 - 340);
+        _indexStore.Load().Notes[path].Y.ShouldBe(755);
+
+        // ...and back.
+        _factory.For(path).Bounds = shrunk.Bounds;
+        _monitors.Monitors = FakeMonitorProvider.TwoAt100Percent().Monitors;
+        manager.OnDisplaySettingsChanged();
+
+        _factory.For(path).StatesApplied.Last().Y.ShouldBe(755);
+    }
+
+    [Fact]
+    public void A_drag_after_a_clamp_is_the_users_rect_again()
+    {
+        var path = WriteNote("n.md");
+        var index = new NoteIndex();
+        index.Notes[path] = StateAt(170, 755);
+
+        _monitors.Monitors = OnlyA720pScreen().Monitors;
+        var manager = Build(index);
+        manager.RestoreOpenNotes();
+
+        _factory.For(path).Bounds = new PixelRect(40, 50, 300, 340);
+        manager.ShutdownWithoutClosingNotes();
+
+        _indexStore.Load().Notes[path].Y.ShouldBe(50);
+    }
+
     [Fact]
     public void OnDisplaySettingsChanged_leaves_an_on_screen_note_where_it_is()
     {
